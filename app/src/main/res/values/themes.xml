@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        使用 NoActionBar 主题：原生 Activity 无标题栏。
+        此前用 DarkActionBar 时，ActionBar 标题（y≈56-100）会遮盖内容区的
+        输入设备选择按钮（y≈86 起），导致无法点击选择输入设备。
+    -->
+    <style name="Theme.LeAudioRecordTools" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:colorPrimary">@android:color/holo_blue_dark</item>
+        <item name="android:colorPrimaryDark">@android:color/holo_blue_dark</item>
+        <item name="android:colorAccent">@android:color/holo_blue_light</item>
+    </style>
+</resources>

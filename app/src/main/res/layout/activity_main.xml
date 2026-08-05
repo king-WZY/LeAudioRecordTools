@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingTop="16dp"
+        android:paddingLeft="16dp"
+        android:paddingRight="16dp"
+        android:paddingBottom="16dp">
+
+        <!-- 页面标题 -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/app_name"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:textColor="@android:color/holo_blue_dark"
+            android:paddingBottom="16dp" />
+
+        <!-- 输入设备选择 -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/input_device_label"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:paddingTop="8dp" />
+
+        <Button
+            android:id="@+id/btnInput"
+            style="?android:attr/buttonStyleSmall"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="(系统默认)"
+            android:singleLine="true" />
+
+        <!-- 输出设备选择 -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/output_device_label"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:paddingTop="16dp" />
+
+        <Button
+            android:id="@+id/btnOutput"
+            style="?android:attr/buttonStyleSmall"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="(系统默认)"
+            android:singleLine="true" />
+
+        <!-- 采样率选择 -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="采样率"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:paddingTop="16dp" />
+
+        <Spinner
+            android:id="@+id/spinnerSampleRate"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:entries="@array/sample_rates" />
+
+        <!-- 录音按钮 -->
+        <Button
+            android:id="@+id/btnRecord"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="@string/record_start" />
+
+        <!-- 实时输入电平 -->
+        <TextView
+            android:id="@+id/txtLevel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="输入电平: -- dB (RMS=-- peak=--)"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:gravity="center" />
+
+        <ProgressBar
+            android:id="@+id/levelBar"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:max="100" />
+
+        <!-- 实时波形 -->
+        <com.qcc.leaudiorecord.WaveformView
+            android:id="@+id/waveform"
+            android:layout_width="match_parent"
+            android:layout_height="120dp"
+            android:layout_marginTop="8dp"
+            android:background="@android:color/black" />
+
+        <!-- 回放按钮 -->
+        <Button
+            android:id="@+id/btnPlay"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/play_start" />
+
+        <!-- 录音文件路径 -->
+        <TextView
+            android:id="@+id/txtFile"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/file_label"
+            android:textSize="12sp"
+            android:textIsSelectable="true" />
+
+        <!-- 状态信息 -->
+        <TextView
+            android:id="@+id/txtStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/status_idle"
+            android:textSize="13sp"
+            android:minLines="4" />
+
+    </LinearLayout>
+</ScrollView>

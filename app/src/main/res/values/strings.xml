@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">LE Audio 录音测试</string>
+    <string name="input_device_label">录音输入设备（MIC 通路）</string>
+    <string name="output_device_label">回放输出设备</string>
+    <string name="record_start">开始录音</string>
+    <string name="record_stop">停止录音</string>
+    <string name="play_start">回放</string>
+    <string name="play_stop">停止回放</string>
+    <string name="status_idle">就绪：选择设备后开始录音</string>
+    <string name="file_label">录音文件</string>
+</resources>

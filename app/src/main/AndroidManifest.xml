@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 录音权限（运行时申请） -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- 允许修改音频设置（切换设备路径） -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- 允许读写共享存储（回放文件管理），targetSdk 36 需要 -->
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+
+    <application
+        android:allowBackup="true"
+        android:icon="@android:drawable/ic_btn_speak_now"
+        android:label="@string/app_name"
+        android:theme="@style/Theme.LeAudioRecordTools">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|keyboardHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>
