@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Bundle
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.ProgressBar
 import android.widget.Spinner
@@ -102,8 +103,8 @@ class MainActivity : Activity() {
     }
 
     /**
-     * 枚举所有输入/输出设备。
-     * 每个列表首项为"系统默认"，随后按类型列出设备。
+     * 主动探测所有输入/输出设备（公开 API，通用）。
+     * 每个列表首项为"系统默认"，随后列出所有探测到的设备。
      */
     private fun refreshDevices() {
         inputDevices.clear()
@@ -112,33 +113,59 @@ class MainActivity : Activity() {
         inputDevices.add(null) // 系统默认
         outputDevices.add(null)
 
+        // 通用探测：不按类型白名单过滤，所有 isSource/isSink 设备均列出
         val allInputs = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
         val allOutputs = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
         android.util.Log.i(TAG, "inputs=${allInputs.size} outputs=${allOutputs.size}")
 
         for (d in allInputs.sortedBy { it.type }) {
-            if (isRecordableInput(d)) {
-                inputDevices.add(d)
-            }
+            if (d.isSource) inputDevices.add(d)
         }
         for (d in allOutputs.sortedBy { it.type }) {
-            if (isPlayableOutput(d)) {
-                outputDevices.add(d)
-            }
+            if (d.isSink) outputDevices.add(d)
         }
 
-        // 默认选中 LE Audio（开发板），其次本机设备
+        // 通用默认选择：输入优先内置 MIC，输出优先扬声器（无则第一项）
         selectedInputIdx = inputDevices.indexOfFirst {
-            it?.type == AudioDeviceInfo.TYPE_BLE_HEADSET
+            it?.type == AudioDeviceInfo.TYPE_BUILTIN_MIC
         }.let { if (it >= 0) it else 0 }
         selectedOutputIdx = outputDevices.indexOfFirst {
-            it?.type == AudioDeviceInfo.TYPE_BLE_HEADSET
+            it?.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
         }.let { if (it >= 0) it else 0 }
 
         updateDeviceButtonText()
+        refreshSampleRatesForSelectedInput()
 
         val total = "输入 ${inputDevices.size - 1} 个, 输出 ${outputDevices.size - 1} 个"
         setStatus("设备枚举完成：$total")
+    }
+
+    /**
+     * 根据当前选中的输入设备动态刷新采样率下拉。
+     * 优先使用设备上报的支持采样率（getSampleRates），
+     * 未上报时使用通用候选列表。
+     */
+    private fun refreshSampleRatesForSelectedInput() {
+        val dev = inputDevices.getOrNull(selectedInputIdx)
+        val reported = dev?.sampleRates ?: IntArray(0)
+        val rates = if (reported.isNotEmpty()) reported
+        else AudioRecordPlayer.FALLBACK_SAMPLE_RATES
+        android.util.Log.i(
+            TAG,
+            "input dev=${dev?.let { AudioRecordPlayer.deviceLabel(it) }} " +
+                    "reportedRates=${reported.joinToString(",")} -> use=${rates.joinToString(",")}"
+        )
+        val items = rates.map { it.toString() }
+        spinnerRate.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_item,
+            items
+        ).apply {
+            setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        }
+        // 尽量选中 16kHz（LE Audio 通话常用），无则默认
+        val idx = rates.indexOfFirst { it == 16000 }
+        if (idx >= 0) spinnerRate.setSelection(idx)
     }
 
     /** 弹出设备选择对话框 */
@@ -158,6 +185,8 @@ class MainActivity : Activity() {
             .setSingleChoiceItems(names.toTypedArray(), currentIdx) { dialog, which ->
                 if (isInput) {
                     selectedInputIdx = which
+                    // 切换输入设备后重新探测其支持的采样率
+                    refreshSampleRatesForSelectedInput()
                 } else {
                     selectedOutputIdx = which
                 }
@@ -174,37 +203,6 @@ class MainActivity : Activity() {
         val outDev = outputDevices.getOrNull(selectedOutputIdx)
         btnInput.text = if (inDev == null) "(系统默认)" else AudioRecordPlayer.deviceLabel(inDev)
         btnOutput.text = if (outDev == null) "(系统默认)" else AudioRecordPlayer.deviceLabel(outDev)
-    }
-
-    /** 判断是否可作为录音输入设备 */
-    private fun isRecordableInput(d: AudioDeviceInfo): Boolean {
-        if (!d.isSource) return false
-        return when (d.type) {
-            AudioDeviceInfo.TYPE_BUILTIN_MIC,
-            AudioDeviceInfo.TYPE_BLE_HEADSET,
-            AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
-            AudioDeviceInfo.TYPE_WIRED_HEADSET,
-            AudioDeviceInfo.TYPE_USB_DEVICE,
-            AudioDeviceInfo.TYPE_USB_HEADSET,
-            AudioDeviceInfo.TYPE_TELEPHONY -> true
-            else -> false
-        }
-    }
-
-    /** 判断是否可作为回放输出设备 */
-    private fun isPlayableOutput(d: AudioDeviceInfo): Boolean {
-        if (!d.isSink) return false
-        return when (d.type) {
-            AudioDeviceInfo.TYPE_BUILTIN_SPEAKER,
-            AudioDeviceInfo.TYPE_BLE_HEADSET,
-            AudioDeviceInfo.TYPE_BLE_SPEAKER,
-            AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
-            AudioDeviceInfo.TYPE_WIRED_HEADSET,
-            AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
-            AudioDeviceInfo.TYPE_USB_DEVICE,
-            AudioDeviceInfo.TYPE_USB_HEADSET -> true
-            else -> false
-        }
     }
 
     private fun onRecordClick() {

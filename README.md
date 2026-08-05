@@ -4,14 +4,17 @@
 
 ## 功能
 
-- **录音输入设备可选**：本机 MIC / LE Audio 开发板 MIC / 蓝牙 SCO / 有线耳机等
-- **回放输出设备可选**：本机扬声器 / LE Audio 开发板 / 蓝牙 A2DP 等
+- **录音输入设备可选**：主动探测所有 `isSource` 设备（内置 MIC / LE Audio / USB / 蓝牙 SCO / 远程混合等）
+- **回放输出设备可选**：主动探测所有 `isSink` 设备（扬声器 / LE Audio / A2DP / USB / HDMI 等）
+- **采样率动态探测**：切换输入设备时读取其 `getSampleRates()` 动态刷新下拉（未上报则用通用候选）
 - **实时输入电平监视**：录音时显示 RMS / 峰值 / dB，直观验证 MIC 是否拾音
 - **实时波形显示**：示波器样式波形，实时显示录音振幅
-- **采样率可选**：8k / 16k / 24k / 32k / 44.1k / 48k（默认 16k，LE Audio 通话常用）
 - 录音保存为 WAV（PCM 16bit mono），位于 App 外部存储目录
 - 通过 `AudioRecord.setPreferredDevice()` / `AudioTrack.setPreferredDevice()`
   显式指定设备，绕过 AudioPolicy 自动路由
+
+> 全部使用公开 API（`AudioManager.getDevices()`、`AudioDeviceInfo.isSource/isSink`
+> `getSampleRates()` 等），**不针对特定设备/平台**，可在多种 Android 设备上通用。
 
 ## 核心技术原理
 

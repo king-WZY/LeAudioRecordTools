@@ -35,31 +35,63 @@ class AudioRecordPlayer {
         /** 录音采样率（LE Audio 通话常用 16kHz/32kHz，可选） */
         var sampleRate: Int = 16000
 
-        /** 生成设备显示名，突出 LE Audio 与本地设备 */
+        /** 通用采样率候选（当设备未上报支持采样率时使用） */
+        val FALLBACK_SAMPLE_RATES = intArrayOf(8000, 16000, 24000, 32000, 44100, 48000)
+
+        /**
+         * 生成设备显示名（通用探测，不针对特定设备/平台）。
+         * 格式：类型名 (厂商 productName) [address]
+         */
         fun deviceLabel(d: AudioDeviceInfo): String {
-            val typeName = when (d.type) {
-                AudioDeviceInfo.TYPE_BUILTIN_MIC -> "本机 MIC"
-                AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "本机扬声器"
-                AudioDeviceInfo.TYPE_BLE_HEADSET -> "LE Audio 耳机(MIC/扬声器)"
-                AudioDeviceInfo.TYPE_BLE_SPEAKER -> "LE Audio 音箱"
-                AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "蓝牙 SCO"
-                AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "蓝牙 A2DP"
-                AudioDeviceInfo.TYPE_WIRED_HEADSET -> "有线耳机(MIC)"
-                AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "有线耳机"
-                AudioDeviceInfo.TYPE_USB_DEVICE -> "USB 设备"
-                AudioDeviceInfo.TYPE_USB_HEADSET -> "USB 耳机"
-                AudioDeviceInfo.TYPE_TELEPHONY -> "电话"
-                else -> "设备(type=${d.type})"
-            }
-            val name = d.productName?.toString()?.takeIf { it.isNotBlank() } ?: ""
+            val typeName = typeName(d.type)
+            val name = d.productName?.toString()?.trim()?.takeIf { it.isNotBlank() } ?: ""
             val addr = try {
                 d.address
             } catch (_: Exception) {
                 ""
             }
-            val namePart = if (name.isNotBlank() && !name.contains(typeName)) " ($name)" else ""
+            val namePart = if (name.isNotBlank() && !name.equals(typeName, ignoreCase = true)) {
+                " ($name)"
+            } else ""
             val addrPart = if (addr.isNotBlank() && addr != "0") " [$addr]" else ""
             return "$typeName$namePart$addrPart"
+        }
+
+        /** 设备类型 → 通用中文名（覆盖 API 36 全部 TYPE_* 常量） */
+        fun typeName(type: Int): String = when (type) {
+            AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> "听筒"
+            AudioDeviceInfo.TYPE_BUILTIN_MIC -> "内置 MIC"
+            AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "扬声器"
+            AudioDeviceInfo.TYPE_BUILTIN_SPEAKER_SAFE -> "安全扬声器"
+            AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "蓝牙 SCO"
+            AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "蓝牙 A2DP"
+            AudioDeviceInfo.TYPE_BLE_HEADSET -> "LE Audio 耳机"
+            AudioDeviceInfo.TYPE_BLE_SPEAKER -> "LE Audio 音箱"
+            AudioDeviceInfo.TYPE_BLE_BROADCAST -> "LE Audio 广播"
+            AudioDeviceInfo.TYPE_WIRED_HEADSET -> "有线耳机(MIC)"
+            AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "有线耳机"
+            AudioDeviceInfo.TYPE_USB_DEVICE -> "USB 设备"
+            AudioDeviceInfo.TYPE_USB_HEADSET -> "USB 耳机"
+            AudioDeviceInfo.TYPE_USB_ACCESSORY -> "USB 配件"
+            AudioDeviceInfo.TYPE_HEARING_AID -> "助听器"
+            AudioDeviceInfo.TYPE_HDMI -> "HDMI"
+            AudioDeviceInfo.TYPE_HDMI_ARC -> "HDMI ARC"
+            AudioDeviceInfo.TYPE_HDMI_EARC -> "HDMI eARC"
+            AudioDeviceInfo.TYPE_AUX_LINE -> "AUX 线路"
+            AudioDeviceInfo.TYPE_LINE_ANALOG -> "模拟线路"
+            AudioDeviceInfo.TYPE_LINE_DIGITAL -> "数字线路"
+            AudioDeviceInfo.TYPE_DOCK -> "底座"
+            AudioDeviceInfo.TYPE_DOCK_ANALOG -> "模拟底座"
+            AudioDeviceInfo.TYPE_FM -> "FM 收音机"
+            AudioDeviceInfo.TYPE_FM_TUNER -> "FM 调谐器"
+            AudioDeviceInfo.TYPE_TV_TUNER -> "TV 调谐器"
+            AudioDeviceInfo.TYPE_TELEPHONY -> "电话"
+            AudioDeviceInfo.TYPE_IP -> "IP 通话"
+            AudioDeviceInfo.TYPE_BUS -> "总线设备"
+            AudioDeviceInfo.TYPE_MULTICHANNEL_GROUP -> "多声道组"
+            AudioDeviceInfo.TYPE_REMOTE_SUBMIX -> "远程混合"
+            AudioDeviceInfo.TYPE_UNKNOWN -> "未知设备"
+            else -> "设备(type=$type)"
         }
     }
 
