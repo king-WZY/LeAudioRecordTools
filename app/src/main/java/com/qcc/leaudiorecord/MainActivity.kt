@@ -274,13 +274,34 @@ class MainActivity : Activity() {
             return
         }
 
-        val file = audio.getLastFile()
-            ?: run {
-                setStatus("请先录音")
-                return
-            }
-        val outputDevice = outputDevices.getOrNull(selectedOutputIdx)
+        val dir = getExternalFilesDir(null)
+        val wavFiles: Array<File> = dir?.listFiles { f ->
+            f.isFile && f.name.endsWith(".wav")
+        } ?: emptyArray()
+        val sorted = wavFiles.sortedByDescending { it.lastModified() }
+        if (sorted.isEmpty()) {
+            setStatus("无 WAV 文件，请先录音")
+            return
+        }
 
+        // 弹出文件选择：目录下全部 WAV（便于回放测试信号做对照）
+        val names = sorted.map { f ->
+            val sizeKb = f.length() / 1024
+            "${f.name} (${sizeKb}KB)"
+        }
+        AlertDialog.Builder(this)
+            .setTitle("选择回放文件")
+            .setItems(names.toTypedArray()) { dialog, which ->
+                startPlayback(sorted[which])
+                dialog.dismiss()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun startPlayback(file: File) {
+        val outputDevice = outputDevices.getOrNull(selectedOutputIdx)
+        txtFile.text = "文件: ${file.absolutePath}"
         val ok = audio.play(file, outputDevice) { msg ->
             runOnUiThread {
                 setStatus(msg)
@@ -291,7 +312,7 @@ class MainActivity : Activity() {
         }
         if (ok) {
             btnPlay.text = getString(R.string.play_stop)
-            setStatus("正在回放…")
+            setStatus("正在回放: ${file.name}…")
         }
     }
 
