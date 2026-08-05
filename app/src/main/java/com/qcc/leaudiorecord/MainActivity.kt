@@ -34,6 +34,7 @@ class MainActivity : Activity() {
     private lateinit var btnInput: Button
     private lateinit var btnOutput: Button
     private lateinit var spinnerRate: Spinner
+    private lateinit var spinnerGain: Spinner
     private lateinit var btnRecord: Button
     private lateinit var btnPlay: Button
     private lateinit var txtFile: TextView
@@ -52,6 +53,39 @@ class MainActivity : Activity() {
     private companion object {
         const val REQ_RECORD_AUDIO = 100
         const val TAG = "LeAudioRecord"
+        /** 录音文件最多保留数量（超出部分自动清理最旧文件） */
+        const val MAX_RECORDINGS = 10
+    }
+
+    /** 读取增益 Spinner 选中值 → 倍数 */
+    private fun selectedGain(): Float = when (spinnerGain.selectedItemPosition) {
+        1 -> 2f
+        2 -> 4f
+        3 -> 8f
+        4 -> 16f
+        else -> 1f
+    }
+
+    /**
+     * 清理旧录音文件，最多保留 keep 个（按修改时间倒序，最新优先）。
+     * 仅清理本应用生成的 rec_*.wav（不影响手动放入的测试信号文件）。
+     *
+     * @return 删除的文件数量
+     */
+    private fun cleanupOldRecordings(keep: Int): Int {
+        val dir = getExternalFilesDir(null) ?: return 0
+        val recs = dir.listFiles { f ->
+            f.isFile && f.name.startsWith("rec_") && f.name.endsWith(".wav")
+        }?.sortedByDescending { it.lastModified() } ?: return 0
+        var deleted = 0
+        for (i in keep until recs.size) {
+            val f = recs[i]
+            if (f.delete()) {
+                deleted++
+                android.util.Log.i(TAG, "cleanup deleted ${f.name}")
+            }
+        }
+        return deleted
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -64,6 +98,7 @@ class MainActivity : Activity() {
         btnInput = findViewById(R.id.btnInput)
         btnOutput = findViewById(R.id.btnOutput)
         spinnerRate = findViewById(R.id.spinnerSampleRate)
+        spinnerGain = findViewById(R.id.spinnerGain)
         btnRecord = findViewById(R.id.btnRecord)
         btnPlay = findViewById(R.id.btnPlay)
         txtFile = findViewById(R.id.txtFile)
@@ -78,6 +113,11 @@ class MainActivity : Activity() {
         btnPlay.setOnClickListener { onPlayClick() }
 
         refreshDevices()
+        // 启动时清理旧录音，最多保留 10 个
+        val deleted = cleanupOldRecordings(keep = MAX_RECORDINGS)
+        if (deleted > 0) {
+            setStatus("已清理 $deleted 个旧录音（最多保留 ${MAX_RECORDINGS} 个）")
+        }
 
         // 请求录音权限
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
@@ -223,6 +263,9 @@ class MainActivity : Activity() {
         val rate = spinnerRate.selectedItem?.toString()?.toIntOrNull() ?: 16000
         AudioRecordPlayer.sampleRate = rate
 
+        // 录音增益（1x/2x/4x/8x/16x）
+        AudioRecordPlayer.recordGain = selectedGain()
+
         val inputDevice = inputDevices.getOrNull(selectedInputIdx)
         val outFile = File(
             getExternalFilesDir(null),
@@ -241,6 +284,11 @@ class MainActivity : Activity() {
                         txtLevel.text = "输入电平: -- dB (RMS=-- peak=--)"
                         levelBar.progress = 0
                         waveform.clear()
+                        // 自动清理旧录音，最多保留 10 个
+                        val deleted = cleanupOldRecordings(keep = MAX_RECORDINGS)
+                        if (deleted > 0) {
+                            setStatus("已保留最近 ${MAX_RECORDINGS} 个录音，清理了 $deleted 个旧文件")
+                        }
                     }
                 }
             },

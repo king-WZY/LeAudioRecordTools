@@ -8,4 +8,13 @@
         <item>44100</item>
         <item>48000</item>
     </string-array>
+
+    <!-- 录音增益倍数（显示值；1x 为原始信号，4x=+12dB, 8x=+18dB, 16x=+24dB） -->
+    <string-array name="record_gains">
+        <item>1x (原始)</item>
+        <item>2x (+6dB)</item>
+        <item>4x (+12dB)</item>
+        <item>8x (+18dB)</item>
+        <item>16x (+24dB)</item>
+    </string-array>
 </resources>

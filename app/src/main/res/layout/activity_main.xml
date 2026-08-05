@@ -75,6 +75,22 @@
             android:layout_marginTop="4dp"
             android:entries="@array/sample_rates" />
 
+        <!-- 录音增益选择 -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="录音增益（补偿弱麦克风信号）"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:paddingTop="16dp" />
+
+        <Spinner
+            android:id="@+id/spinnerGain"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:entries="@array/record_gains" />
+
         <!-- 录音按钮 -->
         <Button
             android:id="@+id/btnRecord"

@@ -35,6 +35,13 @@ class AudioRecordPlayer {
         /** 录音采样率（LE Audio 通话常用 16kHz/32kHz，可选） */
         var sampleRate: Int = 16000
 
+        /**
+         * 录音数字增益倍数（默认 1.0 = 不处理）。
+         * 用于补偿麦克风输入信号过弱（如 LE Audio 开发板 MIC 增益不足）。
+         * 应用时带防削波饱和（clip 到 Int16 范围）。
+         */
+        var recordGain: Float = 1.0f
+
         /** 通用采样率候选（当设备未上报支持采样率时使用） */
         val FALLBACK_SAMPLE_RATES = intArrayOf(8000, 16000, 24000, 32000, 44100, 48000)
 
@@ -168,6 +175,19 @@ class AudioRecordPlayer {
                     while (recording.get()) {
                         val n = record.read(buf, 0, buf.size)
                         if (n > 0) {
+                            // 数字增益（补偿弱麦克风信号），带防削波饱和
+                            val g = recordGain
+                            if (g != 1.0f) {
+                                val samples = n / 2
+                                for (i in 0 until samples) {
+                                    val idx = i * 2
+                                    val raw = ((buf[idx].toInt() and 0xFF) or
+                                            (buf[idx + 1].toInt() shl 8)).toShort().toInt()
+                                    val v = (raw * g).toInt().coerceIn(-32768, 32767)
+                                    buf[idx] = (v and 0xFF).toByte()
+                                    buf[idx + 1] = ((v shr 8) and 0xFF).toByte()
+                                }
+                            }
                             writer.write(buf, 0, n)
                             // 电平 + 波形（每 ~200ms 报告一次）
                             val now = System.currentTimeMillis()
