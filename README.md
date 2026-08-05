@@ -1,66 +1,56 @@
-# LE Audio 录音测试工具 (LeAudioRecordTools)
+# LeAudioRecordTools — 音频设备通路测试工具
 
-用于验证 QCC5181 开发板 LE Audio 麦克风（上行）与扬声器（下行）通路的 Android 测试程序。
+Android 录音/回放测试应用，用于验证音频输入/输出设备通路是否可用，
+重点支持 LE Audio 蓝牙设备的麦克风（上行）与扬声器（下行）双向验证。
 
-## 功能
+## 功能特性
 
-- **录音输入设备可选**：主动探测所有 `isSource` 设备（内置 MIC / LE Audio / USB / 蓝牙 SCO / 远程混合等）
-- **回放输出设备可选**：主动探测所有 `isSink` 设备（扬声器 / LE Audio / A2DP / USB / HDMI 等）
-- **采样率动态探测**：切换输入设备时读取其 `getSampleRates()` 动态刷新下拉（未上报则用通用候选）
-- **实时输入电平监视**：录音时显示 RMS / 峰值 / dB，直观验证 MIC 是否拾音
-- **实时波形显示**：示波器样式波形，实时显示录音振幅
-- 录音保存为 WAV（PCM 16bit mono），位于 App 外部存储目录
-- 通过 `AudioRecord.setPreferredDevice()` / `AudioTrack.setPreferredDevice()`
-  显式指定设备，绕过 AudioPolicy 自动路由
+- **输入设备可选**：主动探测所有音频输入设备（`isSource`），如内置 MIC、LE Audio 耳机、USB、蓝牙 SCO 等
+- **输出设备可选**：主动探测所有音频输出设备（`isSink`），如扬声器、LE Audio、A2DP、USB、HDMI 等
+- **采样率动态适配**：切换输入设备时读取其支持采样率（`getSampleRates()`）动态刷新；未上报时使用通用候选
+- **实时电平监视**：录音时显示 RMS / 峰值 / dB 与电平条
+- **实时波形显示**：示波器样式波形，实时反映输入振幅
+- **WAV 录音**：PCM 16bit，保存到应用外部存储目录
+- **显式设备路由**：通过 `setPreferredDevice()` 指定录音/回放设备，绕过 AudioPolicy 自动路由
 
-> 全部使用公开 API（`AudioManager.getDevices()`、`AudioDeviceInfo.isSource/isSink`
-> `getSampleRates()` 等），**不针对特定设备/平台**，可在多种 Android 设备上通用。
+> 全部基于公开 Android API，不依赖特定设备或平台。
 
-## 核心技术原理
+## 构建与安装
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    设备通路验证                               │
-│                                                             │
-│  录音（上行 MIC）：                                          │
-│  AudioRecord.setPreferredDevice(BLE_HEADSET_IN)             │
-│    → AudioPolicy 强制路由到 0xa0000000                      │
-│    → BT Stack: OnLocalAudioSinkResume                      │
-│    → LE_AUDIO_SOFTWARE_DECODING_DATAPATH 会话               │
-│    → Source ASE / CIS 上行 → 开发板 MIC                     │
-│                                                             │
-│  回放（下行扬声器）：                                        │
-│  AudioTrack.setPreferredDevice(BLE_HEADSET_OUT)            │
-│    → AudioPolicy 强制路由到 0x20000000                      │
-│    → LE_AUDIO_SOFTWARE_ENCODING_DATAPATH 会话               │
-│    → Sink ASE / CIS 下行 → 开发板扬声器                     │
-└─────────────────────────────────────────────────────────────┘
-```
+### 环境要求
 
-## 构建与部署
+| 依赖 | 版本 |
+| :--- | :--- |
+| JDK | 17 |
+| Android SDK | compileSdk 36 |
+| Gradle | 8.13（wrapper 内置） |
+
+### 构建
 
 ```bash
-# 构建
-export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-export ANDROID_HOME=/home/king/Android/Sdk
+export JAVA_HOME=/path/to/jdk17
+export ANDROID_HOME=/path/to/android-sdk
 ./gradlew assembleDebug
+```
 
-# 安装（设备已 adb 连接）
+产物：`app/build/outputs/apk/debug/app-debug.apk`
+
+### 安装与启动
+
+```bash
 adb install -r app/build/outputs/apk/debug/app-debug.apk
-
-# 启动并授予录音权限
 adb shell pm grant com.qcc.leaudiorecord android.permission.RECORD_AUDIO
 adb shell am start -n com.qcc.leaudiorecord/.MainActivity
 ```
 
-## 使用步骤
+## 使用说明
 
-1. 打开 App，确认设备枚举（"输入 N 个, 输出 N 个"）
-2. **录音输入**：默认选中 LE Audio 耳机(QCC5181)，可切本机 MIC
-3. **回放输出**：默认选中 LE Audio 耳机(QCC5181)，可切本机扬声器
-4. 点击"开始录音"，对着设备说话，观察实时电平（应明显波动）
-5. 点击"停止录音"
-6. 点击"回放"，确认声音从所选输出设备播放
+1. **选择录音输入**：点击"录音输入设备"，从弹出列表选择（默认内置 MIC）
+2. **选择回放输出**：点击"回放输出设备"，从弹出列表选择（默认扬声器）
+3. **选择采样率**：下拉框（随所选输入设备自动适配）
+4. **录音**：点击"开始录音"，对目标麦克风说话，观察实时电平/波形
+5. **停止录音**：再次点击按钮，录音保存为 WAV
+6. **回放**：点击"回放"，声音从所选输出设备播放
 
 ## 录音文件位置
 
@@ -68,65 +58,34 @@ adb shell am start -n com.qcc.leaudiorecord/.MainActivity
 /sdcard/Android/data/com.qcc.leaudiorecord/files/rec_<时间戳>_<采样率>hz.wav
 ```
 
-可用 `adb pull` 拉取分析：
+拉取文件：
 
 ```bash
 adb pull /sdcard/Android/data/com.qcc.leaudiorecord/files/rec_*.wav /tmp/
 ```
 
-## 日志调试
+## 日志
 
-```bash
-# App 日志（设备枚举、设备设置结果）
-adb logcat -s LeAudioRecord
-
-# 蓝牙 LE Audio 栈日志（上行/下行会话）
-adb logcat -s bluetooth | grep -iE "OnLocalAudioSinkResume|OnLocalAudioSourceResume|StartReceivingAudio|LE_AUDIO_SOFTWARE"
-```
-
-## 验证要点
-
-| 检查项 | 预期 |
+| 类别 | 命令 |
 | :--- | :--- |
-| 输入设备枚举 | 出现 LE Audio 耳机(QCC5181) type=26 |
-| 输出设备枚举 | 出现 LE Audio 耳机(QCC5181) type=26 |
-| 录音设备设置 | logcat 显示 `set input device ... applied=true` |
-| 上行会话 | `LE_AUDIO_SOFTWARE_DECODING_DATAPATH started` |
-| 实时电平 | 对着开发板说话电平明显波动（> -30dB） |
-| 回放设备设置 | logcat 显示 `set output device ... applied=true` |
-| 下行会话 | `LE_AUDIO_SOFTWARE_ENCODING_DATAPATH started` |
+| 应用日志（设备枚举 / 设备设置 / 采样率探测） | `adb logcat -s LeAudioRecord` |
+| LE Audio 会话（上行/下行数据通路） | `adb logcat -s bluetooth` |
 
-## 已知结论（2026-08-05 实测）
+## 常见问题
 
-- Android 侧 LE Audio **双向通路可建立**（上行/下行会话均成功启动）
-- LE Audio 输入录音电平约为 **-60 ~ -120dB**（微弱底噪），
-  上行数据流稳定但**开发板 MIC 未有效拾音** → 需排查开发板固件 MIC 通路
-- 本机 MIC 在静音环境为全零（峰值 0），属正常
-- 完整链路分析见 QCC5181 仓库文档：
-  `docs/headset/QCC5181-LE-Audio-VoIP-call-bidirectional-fix.md`
+| 现象 | 排查方向 |
+| :--- | :--- |
+| 设备列表为空 | 检查 `RECORD_AUDIO` 权限是否授予 |
+| 输入设备设置后无声 | 确认设备在线；`logcat -s LeAudioRecord` 查看 `applied=true` |
+| LE Audio 上行无声 | 确认蓝牙端 Source ASE 已激活；观察 `bluetooth` 日志中 `OnLocalAudioSinkResume` |
+| 波形/电平静止 | 环境静音或所选 MIC 无信号，切换其他输入设备对照 |
 
-## 本机 MIC 全零的根因（Rockchip HAL 虚拟卡 100 缺失）
+## 工程结构
 
-**现象**：硬件 MIC（ES8323 codec）正常（tinycap 直录有声），扬声器/LE Audio 输出正常，
-但 App 用本机 MIC 录音全零。
-
-**根因**：`audio.primary.rk30board.so`（Rockchip tinyalsa HAL）的内置 MIC 录音路径
-硬编码使用**虚拟声卡 100**（`SND_OUT_VIRTUAL_CARD_SPEAKER=100`，audio_hw.h:116）：
-- 内置 MIC 地址固定为 `"bottom"`（`in_get_microphones` 硬编码）→ `in->address != NULL`
-  → 走虚拟卡分支（audio_hw.c:1815-1820）
-- 虚拟卡 100 需 `snd_aloop.index=100` 内核参数创建；本设备 bootargs 未配置
-  → snd_aloop 自动分配为 card 2 → `pcm_open(100, 0)` 失败 → 录音全零
-
-**日志证据**：
 ```
-E modules.tinyalsa.audio_hal: pcm_open() failed: cannot open device 0 for card 100: No such file or directory
-D modules.tinyalsa.audio_hal: start_input_stream open card = 100, device = 0 fail
+app/src/main/java/com/qcc/leaudiorecord/
+├── MainActivity.kt        # UI + 设备探测 + 会话控制
+├── AudioRecordPlayer.kt   # 录音/回放核心（setPreferredDevice）
+├── WavFile.kt             # WAV 头写入/解析
+└── WaveformView.kt        # 实时波形视图
 ```
-
-**修复方案**：
-- **方案 A（符合 Rockchip 平台设计）**：bootargs/bootconfig 加 `snd_aloop.index=100`，
-  让 snd_aloop 注册为虚拟卡 100（Rockchip 参考平台 rk3308/rk1808 均用此法）
-- **方案 B（HAL 层）**：修改 `start_input_stream`，当虚拟卡 100 打开失败时
-  fallback 到真实 MIC 卡（card 1）
-- **次要问题**：`mixer_paths.xml` 引用 `Capture MIC Path` 控件，但 ES8388 驱动实际
-  控件名为 `Main Mic Switch`/`Differential Mux`/`Line Mux`，需确认 HAL 匹配逻辑
