@@ -374,11 +374,15 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
         lenTensor.close()
 
         // 5. 解析输出 logits
-        val logitsTensor = results.get("logits") as? OnnxTensor
-        if (logitsTensor == null) {
+        // 注意：onnxruntime-android 1.21.0 的 run() 返回 OrtSession.Result（不是 Map），
+        // Result.get(String) 返回 Optional<OnnxValue>，必须 .isPresent/.get() 再转 OnnxTensor。
+        // 旧写法 `results.get("logits") as? OnnxTensor` 拿到的是 Optional，转换永远失败 → "输出 'logits' 未找到"
+        val logitsOptional = results.get("logits")
+        if (!logitsOptional.isPresent) {
             results.close()
             return "(输出 'logits' 未找到)"
         }
+        val logitsTensor = logitsOptional.get() as OnnxTensor
 
         val logitsShape = logitsTensor.info.shape
         val logitsLen = logitsShape[1].toInt()   // 实际 logits 长度（动态）
