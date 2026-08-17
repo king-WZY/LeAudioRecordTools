@@ -19,6 +19,8 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // Vosk 离线语音识别引擎
+        maven { url = uri("https://alphacephei.com/maven/") }
     }
 }
 

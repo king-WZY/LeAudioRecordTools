@@ -16,13 +16,14 @@ import java.io.File
 import java.io.FileOutputStream
 
 /**
- * LE Audio 录音测试工具
+ * LE Audio 录音测试工具 + 离线语音识别
  *
  * 功能：
  * 1. 选择录音输入设备（本机 MIC / LE Audio 开发板 MIC / 其他）——按钮 + 列表对话框
  * 2. 选择回放输出设备（本机扬声器 / LE Audio 开发板 / A2DP 等）——按钮 + 列表对话框
  * 3. 录音（AudioRecord → WAV）与回放（AudioTrack）
  * 4. 实时电平 + 实时波形显示
+ * 5. 离线语音识别（Vosk）——转录录音文件 / 实时流式识别
  *
  * 核心价值：通过 setPreferredDevice 显式指定设备，绕过 AudioPolicy 自动路由，
  * 直接验证 LE Audio 的 MIC 上行通路与扬声器下行通路。
@@ -31,6 +32,7 @@ class MainActivity : Activity() {
 
     private lateinit var audioManager: AudioManager
     private lateinit var audio: AudioRecordPlayer
+    private lateinit var vosk: VoskHelper
 
     private lateinit var btnInput: Button
     private lateinit var btnOutput: Button
@@ -43,6 +45,12 @@ class MainActivity : Activity() {
     private lateinit var txtLevel: TextView
     private lateinit var levelBar: ProgressBar
     private lateinit var waveform: WaveformView
+
+    // ASR 控件
+    private lateinit var btnAsrTranscribe: Button
+    private lateinit var btnAsrListen: Button
+    private lateinit var txtAsrStatus: TextView
+    private lateinit var txtAsrResult: TextView
 
     private val inputDevices = mutableListOf<AudioDeviceInfo?>()
     private val outputDevices = mutableListOf<AudioDeviceInfo?>()
@@ -124,6 +132,7 @@ class MainActivity : Activity() {
 
         audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
         audio = AudioRecordPlayer()
+        vosk = VoskHelper(this)
 
         btnInput = findViewById(R.id.btnInput)
         btnOutput = findViewById(R.id.btnOutput)
@@ -137,10 +146,20 @@ class MainActivity : Activity() {
         levelBar = findViewById(R.id.levelBar)
         waveform = findViewById(R.id.waveform)
 
+        // ASR 控件
+        btnAsrTranscribe = findViewById(R.id.btnAsrTranscribe)
+        btnAsrListen = findViewById(R.id.btnAsrListen)
+        txtAsrStatus = findViewById(R.id.txtAsrStatus)
+        txtAsrResult = findViewById(R.id.txtAsrResult)
+
         btnInput.setOnClickListener { showDeviceDialog(isInput = true) }
         btnOutput.setOnClickListener { showDeviceDialog(isInput = false) }
         btnRecord.setOnClickListener { onRecordClick() }
         btnPlay.setOnClickListener { onPlayClick() }
+
+        // ASR 按钮事件
+        btnAsrTranscribe.setOnClickListener { onAsrTranscribe() }
+        btnAsrListen.setOnClickListener { onAsrListenToggle() }
 
         refreshDevices()
         // 启动时清理旧录音，最多保留 10 个
@@ -158,9 +177,103 @@ class MainActivity : Activity() {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_RECORD_AUDIO)
         }
+
+        // 初始化 Vosk 语音识别模型
+        initVosk()
+    }
+
+    // ======================== Vosk 语音识别 ========================
+
+    /** 初始化 Vosk 离线语音识别模型 */
+    private fun initVosk() {
+        txtAsrStatus.text = getString(R.string.asr_init)
+        btnAsrTranscribe.isEnabled = false
+        btnAsrListen.isEnabled = false
+        vosk.ensureModel(
+            onReady = {
+                runOnUiThread {
+                    txtAsrStatus.text = getString(R.string.asr_ready)
+                    btnAsrTranscribe.isEnabled = true
+                    btnAsrListen.isEnabled = true
+                    android.util.Log.i(TAG, "Vosk model ready")
+                }
+            },
+            onError = { err ->
+                runOnUiThread {
+                    txtAsrStatus.text = "模型加载失败: $err"
+                    android.util.Log.e(TAG, "Vosk init error: $err")
+                }
+            }
+        )
+    }
+
+    /** 转录最近一次录音文件 */
+    private fun onAsrTranscribe() {
+        val lastFile = audio.getLastFile()
+        if (lastFile == null || !lastFile.exists()) {
+            setStatus("请先录音，再转录")
+            txtAsrResult.text = "(无录音文件)"
+            return
+        }
+        txtAsrResult.text = "识别中…"
+        txtAsrStatus.text = "转录中: ${lastFile.name}"
+        btnAsrTranscribe.isEnabled = false
+
+        vosk.transcribeFile(
+            wavFile = lastFile,
+            onResult = { text ->
+                txtAsrResult.text = text
+                txtAsrStatus.text = "转录完成"
+                btnAsrTranscribe.isEnabled = true
+                setStatus("识别结果: $text")
+            },
+            onError = { err ->
+                txtAsrResult.text = "(识别失败)"
+                txtAsrStatus.text = "转录错误: $err"
+                btnAsrTranscribe.isEnabled = true
+            }
+        )
+    }
+
+    /** 实时语音识别开关 */
+    private fun onAsrListenToggle() {
+        if (vosk.isReady.not()) {
+            txtAsrStatus.text = "模型未就绪"
+            return
+        }
+        // 如果按钮文本是"停止识别"，则停止
+        if (btnAsrListen.text.toString() == getString(R.string.asr_listen_stop)) {
+            vosk.stopListening()
+            btnAsrListen.text = getString(R.string.asr_listen_start)
+            btnAsrTranscribe.isEnabled = true
+            txtAsrStatus.text = "实时识别已停止"
+            return
+        }
+        // 启动实时识别
+        txtAsrResult.text = "正在聆听…"
+        txtAsrStatus.text = "实时识别中（对着设备说话）"
+        btnAsrListen.text = getString(R.string.asr_listen_stop)
+        btnAsrTranscribe.isEnabled = false
+
+        vosk.startListening(
+            onPartial = { partial ->
+                txtAsrResult.text = partial
+            },
+            onFinal = { finalText ->
+                txtAsrResult.text = finalText
+                setStatus("识别结果: $finalText")
+            },
+            onError = { err ->
+                txtAsrResult.text = "(识别中断)"
+                txtAsrStatus.text = "识别错误: $err"
+                btnAsrListen.text = getString(R.string.asr_listen_start)
+                btnAsrTranscribe.isEnabled = true
+            }
+        )
     }
 
     override fun onDestroy() {
+        vosk.release()
         audio.release()
         super.onDestroy()
     }

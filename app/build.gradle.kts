@@ -33,4 +33,6 @@ android {
 
 dependencies {
     // 纯 framework 实现，无额外 androidx 依赖
+    // Vosk 离线语音识别引擎
+    implementation("com.alphacephei:vosk-android:0.3.47")
 }

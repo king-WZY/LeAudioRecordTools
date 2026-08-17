@@ -134,6 +134,65 @@
             android:layout_marginTop="8dp"
             android:text="@string/play_start" />
 
+        <!-- ========== 语音识别区域 ========== -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="语音识别 (Vosk 离线)"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="@android:color/holo_green_dark"
+            android:paddingTop="20dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="8dp">
+
+            <Button
+                android:id="@+id/btnAsrTranscribe"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginEnd="4dp"
+                android:text="转录录音"
+                android:enabled="false" />
+
+            <Button
+                android:id="@+id/btnAsrListen"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="4dp"
+                android:text="实时识别"
+                android:enabled="false" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/txtAsrStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="模型未加载"
+            android:textSize="12sp"
+            android:textColor="@android:color/darker_gray" />
+
+        <!-- 识别结果 -->
+        <TextView
+            android:id="@+id/txtAsrResult"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:padding="12dp"
+            android:background="@android:color/white"
+            android:textColor="@android:color/black"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:gravity="center"
+            android:minLines="3"
+            android:text="(识别结果将显示在这里)" />
+
         <!-- 录音文件路径 -->
         <TextView
             android:id="@+id/txtFile"

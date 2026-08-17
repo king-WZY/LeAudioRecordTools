@@ -9,4 +9,10 @@
     <string name="play_stop">停止回放</string>
     <string name="status_idle">就绪：选择设备后开始录音</string>
     <string name="file_label">录音文件</string>
+    <string name="asr_init">初始化语音识别模型…</string>
+    <string name="asr_ready">语音识别就绪（Vosk 离线）</string>
+    <string name="asr_transcribe">转录录音</string>
+    <string name="asr_listen_start">实时识别</string>
+    <string name="asr_listen_stop">停止识别</string>
+    <string name="asr_result_placeholder">(识别结果将显示在这里)</string>
 </resources>
