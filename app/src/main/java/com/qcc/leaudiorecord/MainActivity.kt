@@ -60,6 +60,12 @@ class MainActivity : Activity() {
     private lateinit var txtAsrStatus: TextView
     private lateinit var txtAsrResult: TextView
 
+    // ASR 增益 & 电平控件
+    private lateinit var spinnerAsrGain: Spinner
+    private lateinit var btnAutoGain: Button
+    private lateinit var txtAsrLevel: TextView
+    private lateinit var asrLevelBar: ProgressBar
+
     private val inputDevices = mutableListOf<AudioDeviceInfo?>()
     private val outputDevices = mutableListOf<AudioDeviceInfo?>()
 
@@ -108,6 +114,8 @@ class MainActivity : Activity() {
         2 -> 4f
         3 -> 8f
         4 -> 16f
+        5 -> 32f
+        6 -> 64f
         else -> 1f
     }
 
@@ -163,6 +171,12 @@ class MainActivity : Activity() {
         txtAsrStatus = findViewById(R.id.txtAsrStatus)
         txtAsrResult = findViewById(R.id.txtAsrResult)
 
+        // ASR 增益 & 电平
+        spinnerAsrGain = findViewById(R.id.spinnerAsrGain)
+        btnAutoGain = findViewById(R.id.btnAutoGain)
+        txtAsrLevel = findViewById(R.id.txtAsrLevel)
+        asrLevelBar = findViewById(R.id.asrLevelBar)
+
         btnInput.setOnClickListener { showDeviceDialog(isInput = true) }
         btnOutput.setOnClickListener { showDeviceDialog(isInput = false) }
         btnRecord.setOnClickListener { onRecordClick() }
@@ -172,6 +186,7 @@ class MainActivity : Activity() {
         btnAsrModel.setOnClickListener { onSwitchModel() }
         btnAsrTranscribe.setOnClickListener { onAsrTranscribe() }
         btnAsrListen.setOnClickListener { onAsrListenToggle() }
+        btnAutoGain.setOnClickListener { onAutoGain() }
 
         refreshDevices()
         val deleted = cleanupOldRecordings(keep = MAX_RECORDINGS)
@@ -287,6 +302,19 @@ class MainActivity : Activity() {
             txtAsrStatus.text = "实时识别已停止"
             return
         }
+        // 读取 ASR 增益
+        val asrGain = when (spinnerAsrGain.selectedItemPosition) {
+            1 -> 2f
+            2 -> 4f
+            3 -> 8f
+            4 -> 16f
+            5 -> 32f
+            6 -> 64f
+            else -> 1f
+        }
+        AudioRecordPlayer.asrGain = asrGain
+        android.util.Log.i(TAG, "ASR gain set to ${asrGain}x")
+
         // 启动实时识别
         txtAsrResult.text = "正在聆听…"
         txtAsrStatus.text = "实时识别中（对着设备说话）"
@@ -306,8 +334,44 @@ class MainActivity : Activity() {
                 txtAsrStatus.text = "识别错误: $err"
                 btnAsrListen.text = getString(R.string.asr_listen_start)
                 btnAsrTranscribe.isEnabled = true
+            },
+            onLevel = { peak, rms, dbfs ->
+                txtAsrLevel.text = "ASR 输入电平: ${dbfs.toInt()} dBFS (RMS=$rms peak=$peak)"
+                val pct = ((dbfs + 60f) / 60f * 100f).toInt().coerceIn(0, 100)
+                asrLevelBar.progress = pct
             }
         )
+    }
+
+    /** 自动增益分析：从最近录音文件分析并建议增益 */
+    private fun onAutoGain() {
+        val lastFile = audio.getLastFile()
+        if (lastFile == null || !lastFile.exists()) {
+            setStatus("请先录音，再分析增益")
+            return
+        }
+        val result = AudioGainUtil.analyzeWavFile(lastFile.absolutePath)
+        if (result == null) {
+            setStatus("无法分析录音文件")
+            return
+        }
+        val msg = "录音分析: ${result.summary} (时长: ${result.durationMs}ms)"
+        setStatus(msg)
+
+        // 在 ASR 增益 Spinner 中选择最接近的建议增益
+        val gainOptions = floatArrayOf(1f, 2f, 4f, 8f, 16f, 32f, 64f)
+        var bestIdx = 0
+        var bestDiff = Float.MAX_VALUE
+        for (i in gainOptions.indices) {
+            val diff = kotlin.math.abs(gainOptions[i] - result.suggestedGain)
+            if (diff < bestDiff) {
+                bestDiff = diff
+                bestIdx = i
+            }
+        }
+        spinnerAsrGain.setSelection(bestIdx)
+        AudioRecordPlayer.asrGain = gainOptions[bestIdx]
+        txtAsrStatus.text = "建议增益: ${gainOptions[bestIdx]}x (${result.summary})"
     }
 
     override fun onDestroy() {

@@ -202,6 +202,54 @@
             android:minLines="3"
             android:text="(识别结果将显示在这里)" />
 
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="ASR 增益"
+                android:textSize="13sp"
+                android:gravity="center_vertical" />
+
+            <Spinner
+                android:id="@+id/spinnerAsrGain"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="2"
+                android:entries="@array/record_gains" />
+
+            <Button
+                android:id="@+id/btnAutoGain"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="自动"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <!-- ASR 输入电平 -->
+        <TextView
+            android:id="@+id/txtAsrLevel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="ASR 输入电平: -- dBFS"
+            android:textSize="13sp"
+            android:gravity="center" />
+
+        <ProgressBar
+            android:id="@+id/asrLevelBar"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:max="100" />
+
         <!-- 录音文件路径 -->
         <TextView
             android:id="@+id/txtFile"

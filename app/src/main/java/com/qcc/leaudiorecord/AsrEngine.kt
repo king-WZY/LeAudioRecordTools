@@ -35,8 +35,14 @@ interface AsrEngine {
      * @param onPartial 中间结果（主线程）
      * @param onFinal   最终结果（主线程）
      * @param onError   错误（主线程）
+     * @param onLevel   实时电平回调（主线程，可选），参数 peak/rms/dbfs
      */
-    fun startListening(onPartial: (String) -> Unit, onFinal: (String) -> Unit, onError: (String) -> Unit)
+    fun startListening(
+        onPartial: (String) -> Unit,
+        onFinal: (String) -> Unit,
+        onError: (String) -> Unit,
+        onLevel: ((peak: Int, rms: Int, dbfs: Float) -> Unit)? = null
+    )
 
     /** 停止实时流式识别 */
     fun stopListening()

@@ -42,6 +42,12 @@ class AudioRecordPlayer {
          */
         var recordGain: Float = 1.0f
 
+        /**
+         * 实时语音识别增益倍数（默认 1.0 = 不处理）。
+         * 与录音增益独立，以便 ASR 时使用更高增益补偿。
+         */
+        var asrGain: Float = 1.0f
+
         /** 通用采样率候选（当设备未上报支持采样率时使用） */
         val FALLBACK_SAMPLE_RATES = intArrayOf(8000, 16000, 24000, 32000, 44100, 48000)
 

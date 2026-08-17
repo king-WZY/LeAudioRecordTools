@@ -69,6 +69,7 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
     private var onPartialCb: ((String) -> Unit)? = null
     private var onFinalCb: ((String) -> Unit)? = null
     private var onErrorCb: ((String) -> Unit)? = null
+    private var onLevelCb: ((Int, Int, Float) -> Unit)? = null
 
     override val isReady: Boolean get() = ortSession != null
 
@@ -389,7 +390,8 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
     override fun startListening(
         onPartial: (String) -> Unit,
         onFinal: (String) -> Unit,
-        onError: (String) -> Unit
+        onError: (String) -> Unit,
+        onLevel: ((peak: Int, rms: Int, dbfs: Float) -> Unit)?
     ) {
         if (isListening) {
             onError("已在识别中")
@@ -403,6 +405,7 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
         onPartialCb = onPartial
         onFinalCb = onFinal
         onErrorCb = onError
+        onLevelCb = onLevel
         isListening = true
 
         listenThread = thread(name = "paraformer-listen") {
@@ -432,10 +435,27 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
 
             val accumulated = mutableListOf<Short>()
             val buf = ShortArray(CHUNK_SAMPLES)
+            var lastLevelReport = 0L
 
             while (isListening) {
                 val n = record.read(buf, 0, buf.size)
                 if (n > 0) {
+                    // 应用 ASR 增益
+                    val gain = AudioRecordPlayer.asrGain
+                    if (gain != 1.0f) {
+                        AudioGainUtil.applyGain(buf, gain)
+                    }
+
+                    // 报告电平（每 ~200ms）
+                    val now = System.currentTimeMillis()
+                    if (onLevelCb != null && now - lastLevelReport >= 200) {
+                        lastLevelReport = now
+                        val level = AudioGainUtil.analyzeLevel(buf, gain)
+                        Handler(Looper.getMainLooper()).post {
+                            onLevelCb?.invoke(level.peak, level.rms, level.dbfs)
+                        }
+                    }
+
                     accumulated.addAll(buf.take(n))
                     // 累积至少 0.5s 音频后再识别
                     if (accumulated.size >= SAMPLE_RATE / 2) {

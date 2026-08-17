@@ -153,7 +153,8 @@ class VoskHelper(private val appContext: Context) : AsrEngine {
     override fun startListening(
         onPartial: (String) -> Unit,
         onFinal: (String) -> Unit,
-        onError: (String) -> Unit
+        onError: (String) -> Unit,
+        onLevel: ((peak: Int, rms: Int, dbfs: Float) -> Unit)?
     ) {
         val m = model ?: run {
             onError("模型未初始化")
