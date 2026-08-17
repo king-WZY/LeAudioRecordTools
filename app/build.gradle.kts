@@ -29,13 +29,6 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
-
-    // 使用已预先对齐 16KB 的原生库，覆盖 AAR 自带的 .so
-    sourceSets {
-        getByName("main") {
-            jniLibs.srcDirs("src/main/jniLibs")
-        }
-    }
 }
 
 dependencies {
