@@ -138,7 +138,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="语音识别 (Vosk 离线)"
+            android:text="语音识别"
             android:textSize="16sp"
             android:textStyle="bold"
             android:textColor="@android:color/holo_green_dark"
@@ -148,7 +148,16 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
-            android:layout_marginTop="8dp">
+            android:layout_marginTop="6dp">
+
+            <Button
+                android:id="@+id/btnAsrModel"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginEnd="4dp"
+                android:text="切换: Vosk"
+                android:enabled="false" />
 
             <Button
                 android:id="@+id/btnAsrTranscribe"

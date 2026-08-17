@@ -14,17 +14,14 @@ import java.io.FileOutputStream
 import java.util.zip.ZipInputStream
 
 /**
- * Vosk 离线语音识别辅助类
+ * Vosk 离线语音识别引擎 —— 实现 [AsrEngine] 接口
  *
- * 职责：
- * 1. 管理模型文件生命周期（从 assets 解压到内部存储）
- * 2. 初始化 Vosk 引擎
- * 3. 提供 WAV 文件转录与实时流式识别两种接口
- *
- * 模型要求：将 vosk-model-small-cn-0.22 或 vosk-model-small-en-us-0.15 的 zip
- * 包放入 app/src/main/assets/vosk/ 目录下，应用首次启动时自动解压。
+ * 模型要求：将 vosk-model-small-cn-0.22 的 zip 包放入
+ * app/src/main/assets/vosk/ 目录下，应用首次启动时自动解压。
  */
-class VoskHelper(private val appContext: Context) {
+class VoskHelper(private val appContext: Context) : AsrEngine {
+
+    override val name: String get() = "Vosk"
 
     companion object {
         private const val TAG = "LeAudioVosk"
@@ -38,16 +35,15 @@ class VoskHelper(private val appContext: Context) {
     private var speechService: SpeechService? = null
     private var recognizer: Recognizer? = null
 
-    /** 模型是否已就绪 */
-    val isReady: Boolean get() = model != null
+    override val isReady: Boolean get() = model != null
 
     // ======================== 模型部署 ========================
 
-    /**
-     * 检查模型是否已解压，若否则从 assets 解压。
-     * 解压完成后调用 [onReady] 回调。
-     */
-    fun ensureModel(onReady: () -> Unit, onError: (String) -> Unit) {
+    override fun initialize(onReady: () -> Unit, onError: (String) -> Unit) {
+        ensureModel(onReady, onError)
+    }
+
+    private fun ensureModel(onReady: () -> Unit, onError: (String) -> Unit) {
         val modelDir = getModelDir()
         if (modelDir.exists() && modelDir.listFiles()?.isNotEmpty() == true) {
             Log.i(TAG, "model dir already exists: ${modelDir.absolutePath}")
@@ -111,25 +107,16 @@ class VoskHelper(private val appContext: Context) {
 
     // ======================== WAV 文件转录 ========================
 
-    /**
-     * 转录 WAV 文件（16kHz, mono, 16bit）。
-     *
-     * @param wavFile  WAV 文件
-     * @param onResult 识别结果回调（主线程）
-     * @param onError  错误回调
-     */
-    fun transcribeFile(wavFile: File, onResult: (String) -> Unit, onError: (String) -> Unit) {
+    override fun transcribeFile(wavFile: File, onResult: (String) -> Unit, onError: (String) -> Unit) {
         val m = model ?: run {
             onError("模型未初始化")
             return
         }
         thread {
             try {
-                // 使用 16kHz 采样率识别（Vosk 默认）
                 val rec = Recognizer(m, 16000.0f)
-                rec.setWords(false) // 不需要单词语义时间戳，只取文本
+                rec.setWords(false)
                 val fis = FileInputStream(wavFile)
-                // 跳过 WAV 头（44 bytes）
                 fis.skip(44)
                 val buf = ByteArray(4096)
                 var n: Int
@@ -137,14 +124,12 @@ class VoskHelper(private val appContext: Context) {
                 while (fis.read(buf).also { n = it } > 0) {
                     if (rec.acceptWaveForm(buf, n)) {
                         val result = rec.result
-                        // 从 JSON 中提取 "text" 字段
                         val text = extractText(result)
                         if (text.isNotBlank()) {
                             finalText += text + " "
                         }
                     }
                 }
-                // 获取最后一段
                 val finalResult = rec.finalResult
                 val text = extractText(finalResult)
                 if (text.isNotBlank()) {
@@ -154,32 +139,18 @@ class VoskHelper(private val appContext: Context) {
                 rec.close()
                 val trimmed = finalText.trim()
                 Handler(Looper.getMainLooper()).post {
-                    if (trimmed.isNotBlank()) {
-                        onResult(trimmed)
-                    } else {
-                        onResult("(未识别到语音)")
-                    }
+                    onResult(trimmed.ifBlank { "(未识别到语音)" })
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "transcribe error", e)
-                Handler(Looper.getMainLooper()).post {
-                    onError("转录失败: ${e.message}")
-                }
+                Handler(Looper.getMainLooper()).post { onError("转录失败: ${e.message}") }
             }
         }
     }
 
     // ======================== 实时流式识别 ========================
 
-    /**
-     * 启动实时流式语音识别。
-     * 使用 Vosk 的 SpeechService 封装，从默认 MIC 实时采集识别。
-     *
-     * @param onPartial  中间结果（主线程）
-     * @param onFinal    最终结果（主线程）
-     * @param onError    错误回调
-     */
-    fun startListening(
+    override fun startListening(
         onPartial: (String) -> Unit,
         onFinal: (String) -> Unit,
         onError: (String) -> Unit
@@ -234,8 +205,7 @@ class VoskHelper(private val appContext: Context) {
         }
     }
 
-    /** 停止实时流式识别 */
-    fun stopListening() {
+    override fun stopListening() {
         speechService?.let {
             try {
                 it.stop()
@@ -249,10 +219,6 @@ class VoskHelper(private val appContext: Context) {
 
     // ======================== 工具方法 ========================
 
-    /**
-     * 从 Vosk JSON 结果中提取 text 字段。
-     * 例如 {"text": "你好世界"} → "你好世界"
-     */
     private fun extractText(json: String): String {
         val marker = "\"text\" : \""
         val start = json.indexOf(marker)
@@ -262,8 +228,7 @@ class VoskHelper(private val appContext: Context) {
         return if (end > begin) json.substring(begin, end) else ""
     }
 
-    /** 释放所有资源 */
-    fun release() {
+    override fun release() {
         stopListening()
         recognizer?.close()
         recognizer = null
@@ -272,9 +237,6 @@ class VoskHelper(private val appContext: Context) {
     }
 }
 
-/**
- * 启动一个后台线程执行代码块
- */
 private fun thread(block: () -> Unit): Thread {
     return Thread(block).apply { start() }
 }
