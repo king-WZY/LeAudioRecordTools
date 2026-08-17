@@ -4,15 +4,17 @@ import android.util.Log
 import kotlin.math.*
 
 /**
- * FBank (Filter Bank) 特征提取器
+ * FBank (Filter Bank) 特征提取器 —— 与 sherpa-onnx / kaldi paraformer 前端严格对齐
  *
- * 将 16kHz mono PCM 音频转换为 80 维 FBank 特征（与 kaldi 对齐）。
- *
- * 处理流程（与 kaldi OnlineFbank 一致）：
- * 1. 分帧 + Hamming 窗 (snip_edges=false)
- * 2. FFT → 功率谱
- * 3. Mel 滤波器组 (80 bins, 20~8000Hz)
- * 4. Log 压缩
+ * 参数来自 sherpa-onnx OfflineRecognizerParaformerImpl::InitFeatConfig：
+ *   - normalize_samples = false  → 输入保持 int16 范围 [-32768, 32767]（绝不能除以 32768，
+ *     am.mvn 的均值 ≈ 8.3 就是按 int16 尺度统计的）
+ *   - window_type = hamming
+ *   - high_freq = 0              → Nyquist（16kHz 下即 8000Hz）
+ *   - snip_edges = true          → 帧数 = (N - frame_length) / frame_shift + 1
+ *   - low_freq = 20（默认），80 bins，25ms / 10ms
+ *   - kaldi 默认 preemph 0.97 + remove_dc_offset = true + dither = 0
+ *   - 功率谱不做任何缩放（kaldi ComputePowerSpectrum 无除法）
  *
  * 注意：Paraformer 需要额外做 LFR(7帧拼接, stride=6) 和 CMVN，
  * 这些在 ParaformerHelper 中处理。
@@ -34,8 +36,10 @@ class FbankExtractor {
         const val NUM_MEL_BINS = 80
         /** 最低频率 (Hz) */
         const val F_MIN = 20.0
-        /** 最高频率 (Hz) */
+        /** 最高频率 (Hz) —— high_freq=0 即 Nyquist */
         const val F_MAX = 8000.0
+        /** kaldi 默认预加重系数 */
+        const val PREEMPH_COEFF = 0.97f
     }
 
     /** 帧长 (采样点) */
@@ -88,44 +92,51 @@ class FbankExtractor {
     }
 
     /**
-     * 从 PCM 数据提取 FBank 特征（与 kaldi OnlineFbank 对齐）。
-     * snip_edges=false 模式：最后一个帧可能部分超出信号末尾，但不会丢弃。
+     * 从 PCM 数据提取 FBank 特征（与 sherpa-onnx/kaldi paraformer 前端对齐）。
      *
-     * @param pcm 16kHz mono PCM 数据 (short array)
+     * @param pcm 16kHz mono PCM 数据 (short array)，保持 int16 尺度
      * @return 特征矩阵 [num_frames, NUM_MEL_BINS]
      */
     fun extract(pcm: ShortArray): Array<FloatArray> {
-        // 转为 float [-1, 1]
-        val floatPcm = FloatArray(pcm.size) { pcm[it].toFloat() / 32768f }
+        if (pcm.size < frameLength) return emptyArray()
 
-        // snip_edges=false 模式计算帧数
-        val numFrames = maxOf(1,
-            (floatPcm.size - frameLength + frameShift) / frameShift + 1
-        )
+        // snip_edges=true：帧数 = (N - frame_length) / frame_shift + 1
+        val numFrames = (pcm.size - frameLength) / frameShift + 1
 
         val features = Array(numFrames) { t ->
             val start = t * frameShift
-            // 加窗（超出的部分补零，与 kaldi 一致）
-            val windowed = FloatArray(FFT_SIZE) { i ->
-                if (start + i < floatPcm.size) {
-                    floatPcm[start + i] * hammingWindow.getOrElse(i) { 0f }
-                } else 0f
+
+            // 1. 取帧（保持 int16 尺度，不做 /32768）
+            val frame = FloatArray(frameLength) { i -> pcm[start + i].toFloat() }
+
+            // 2. 去直流（kaldi remove_dc_offset=true）
+            val mean = frame.sum() / frameLength
+            for (i in frame.indices) {
+                frame[i] = frame[i] - mean
             }
 
-            // 实部 FFT
-            val real = windowed
+            // 3. 预加重（kaldi preemph_coeff=0.97）
+            for (i in frameLength - 1 downTo 1) {
+                frame[i] = frame[i] - PREEMPH_COEFF * frame[i - 1]
+            }
+
+            // 4. Hamming 窗 + 填 FFT 缓冲（snip_edges=true，不产生尾部越界帧）
+            val real = FloatArray(FFT_SIZE)
+            for (i in 0 until frameLength) {
+                real[i] = frame[i] * hammingWindow[i]
+            }
+
+            // 5. FFT → 功率谱（kaldi 不做任何缩放）
             val imag = FloatArray(FFT_SIZE)
             fft(real, imag)
-
-            // 功率谱
             val numFftBins = FFT_SIZE / 2 + 1
             val power = FloatArray(numFftBins) { k ->
                 val r = real[k]
                 val im = imag[k]
-                (r * r + im * im) / FFT_SIZE.toFloat()
+                r * r + im * im
             }
 
-            // Mel 滤波 → Log 压缩
+            // 6. Mel 滤波 → Log 压缩
             FloatArray(NUM_MEL_BINS) { m ->
                 var sum = 0f
                 for (k in 0 until numFftBins) {

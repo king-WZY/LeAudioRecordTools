@@ -50,9 +50,19 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
         /** 采样率 */
         const val SAMPLE_RATE = 16000
 
-        /** 实时识别音频块时长 (ms) */
-        private const val CHUNK_MS = 800
-        private const val CHUNK_SAMPLES = SAMPLE_RATE * CHUNK_MS / 1000
+        /** 实时识别滑动窗口时长 (ms) */
+        private const val WINDOW_MS = 2000
+        private const val WINDOW_SAMPLES = SAMPLE_RATE * WINDOW_MS / 1000   // 32000
+
+        /** 实时识别推理步进：每积累这么多新样本推理一次 */
+        private const val INFER_STEP_MS = 500
+        private const val INFER_STEP_SAMPLES = SAMPLE_RATE * INFER_STEP_MS / 1000  // 8000
+
+        /** 最小推理音频长度（低于此长度不做推理） */
+        private const val MIN_INFER_SAMPLES = SAMPLE_RATE * 500 / 1000
+
+        /** 采集 read 缓冲（100ms） */
+        private const val READ_CHUNK_SAMPLES = SAMPLE_RATE * 100 / 1000  // 1600
     }
 
     private var ortEnv: OrtEnvironment? = null
@@ -64,12 +74,19 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
 
     // 实时识别相关
     private var listenThread: Thread? = null
+    private var inferThread: Thread? = null
     @Volatile private var isListening = false
     private var audioRecord: android.media.AudioRecord? = null
     private var onPartialCb: ((String) -> Unit)? = null
     private var onFinalCb: ((String) -> Unit)? = null
     private var onErrorCb: ((String) -> Unit)? = null
     private var onLevelCb: ((Int, Int, Float) -> Unit)? = null
+
+    // 滑动窗口共享状态（采集线程写，推理线程读）
+    private val windowLock = Object()
+    private var window = mutableListOf<Short>()
+    private var newSamples = 0
+    private var captureDone = false
 
     override val isReady: Boolean get() = ortSession != null
 
@@ -172,37 +189,45 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
     }
 
     /**
-     * 解析 am.mvn 文件（kaldi 格式）
-     * 格式：<LearnRateCoef> 1 <LearnRateCoef> 值1 值2 ... 值N
-     * 前 560 个为 neg_mean，后 560 个为 inv_std
+     * 解析 am.mvn 文件（kaldi nnet1 格式，与 sherpa-onnx kaldi-cmvn 对齐）
+     *
+     * 结构：
+     *   <Nnet>
+     *     <Splice> 560 560 [ 0 ]                       ← 上下文数组（忽略）
+     *     <AddShift> 560 560 <LearnRateCoef> 0 [ ...560 个 shift... ]   ← 负均值
+     *     <Rescale> 560 560 <LearnRateCoef> 0 [ ...560 个 scale... ]    ← 逆标准差
+     *   </Nnet>
+     *
+     * 必须分别解析两个 `[...]` 数组（共 3 个数组：Splice 上下文、AddShift、Rescale）。
+     * 旧实现把 `<LearnRateCoef>` 之后所有数字混在一起，导致 inv_std 前 3 个值
+     * 变成了 560.0 / 560.0 / 0.0（垃圾），CMVN 完全错误。
      */
     private fun loadCmvn(file: File) {
         val text = file.readText()
-        val parts = text.split(Regex("\\s+"))
-        // 找到 <LearnRateCoef> 后面的数值
-        var startIdx = -1
-        for (i in parts.indices) {
-            if (parts[i] == "<LearnRateCoef>" && i + 2 < parts.size) {
-                startIdx = i + 2
-                break
+        val arrays = Regex("\\[(.*?)\\]", RegexOption.DOT_MATCHES_ALL)
+            .findAll(text)
+            .map { m ->
+                m.groupValues[1].trim()
+                    .split(Regex("\\s+"))
+                    .filter { it.isNotBlank() }
+                    .mapNotNull { it.toFloatOrNull() }
             }
-        }
-        if (startIdx < 0) {
-            Log.w(TAG, "am.mvn: <LearnRateCoef> not found")
+            .toList()
+
+        // arrays[0] = <Splice> 上下文 [0]，arrays[1] = <AddShift>（负均值），arrays[2] = <Rescale>（逆标准差）
+        val shift = arrays.getOrNull(1) ?: emptyList()
+        val scale = arrays.getOrNull(2) ?: emptyList()
+        if (shift.size < 560 || scale.size < 560) {
+            Log.w(TAG, "am.mvn: expected 2x560 values, got shift=${shift.size} scale=${scale.size}")
             return
         }
 
-        // 从 startIdx 到末尾一共 1120 个值（560 neg_mean + 560 inv_std）
-        val values = parts.drop(startIdx).mapNotNull { it.toFloatOrNull() }
-        if (values.size < 1120) {
-            Log.w(TAG, "am.mvn: expected 1120 values, got ${values.size}")
-            return
-        }
-
-        val featDim = 560
-        cmvnNegMean = FloatArray(featDim) { values[it] }
-        cmvnInvStd = FloatArray(featDim) { values[featDim + it] }
-        Log.i(TAG, "CMVN loaded: neg_mean[0]=${cmvnNegMean!![0]}")
+        cmvnNegMean = FloatArray(560) { shift[it] }
+        cmvnInvStd = FloatArray(560) { scale[it] }
+        Log.i(
+            TAG,
+            "CMVN loaded: neg_mean[0]=${cmvnNegMean!![0]} inv_std[0]=${cmvnInvStd!![0]}"
+        )
     }
 
     // ======================== 特征处理 ========================
@@ -210,42 +235,45 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
     /**
      * 提取 FBank 特征 → LFR 拼接 → CMVN 归一化
      *
-     * @param pcm 16kHz mono PCM 数据
+     * 与 sherpa-onnx OfflineRecognizerParaformerImpl::DecodeStreams 一致：
+     *   1. fbank(80) → LFR(7,6) → 560 维 → CMVN((x + neg_mean) * inv_std)
+     *   2. LFR 仅保留完整窗口（start + M <= num_frames），不补帧
+     *
+     * @param pcm 16kHz mono PCM 数据（int16 尺度）
      * @return [T, 560] float32 特征矩阵
      */
     private fun computeFeatures(pcm: ShortArray): Array<FloatArray> {
         val fb = fbank ?: return emptyArray()
-        // 1. 提取 80 维 FBank
+        // 1. 提取 80 维 FBank（与 kaldi/sherpa-onnx 前端一致）
         val fbankFeats = fb.extract(pcm)
         if (fbankFeats.isEmpty()) return emptyArray()
 
         val t = fbankFeats.size
         val d = 80
 
-        // 2. LFR：7 帧拼接，stride=6
-        val lfrT = maxOf(0, (t - LFR_M) / LFR_N + 1)
-        if (lfrT <= 0) return emptyArray()
+        // 2. LFR：7 帧拼接，stride=6；与 sherpa-onnx lfr.cc 一致，丢弃不完整窗口
+        var numOut = 0
+        var start = 0
+        while (start + LFR_M <= t) {
+            numOut++
+            start += LFR_N
+        }
+        if (numOut <= 0) return emptyArray()
 
-        val lfrFeats = Array(lfrT) { i ->
+        val lfrFeats = Array(numOut) { i ->
             val startFrame = i * LFR_N
             val feat = FloatArray(d * LFR_M)
             for (j in 0 until LFR_M) {
-                val srcIdx = startFrame + j
-                if (srcIdx < t) {
-                    System.arraycopy(fbankFeats[srcIdx], 0, feat, j * d, d)
-                } else {
-                    // 超出部分用最后一帧填充
-                    System.arraycopy(fbankFeats[t - 1], 0, feat, j * d, d)
-                }
+                System.arraycopy(fbankFeats[startFrame + j], 0, feat, j * d, d)
             }
             feat
         }
 
-        // 3. CMVN 归一化
+        // 3. CMVN 归一化（与 sherpa-onnx ApplyCMVN 一致）
         val negMean = cmvnNegMean
         val invStd = cmvnInvStd
         if (negMean != null && invStd != null) {
-            for (i in 0 until lfrT) {
+            for (i in 0 until numOut) {
                 for (j in 0 until d * LFR_M) {
                     lfrFeats[i][j] = (lfrFeats[i][j] + negMean[j]) * invStd[j]
                 }
@@ -262,20 +290,39 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
 
         thread {
             try {
-                // 读取 WAV 文件（跳过 44 字节头）
-                val fis = FileInputStream(wavFile)
-                fis.skip(44)
-                val pcmBytes = fis.readBytes()
-                fis.close()
+                // 解析 WAV 头（支持非标准/带扩展块的头，不能硬编码 44 字节）
+                val header = WavFileReader.parse(wavFile)
+                if (header == null) {
+                    Handler(Looper.getMainLooper()).post { onError("无法解析 WAV 文件头") }
+                    return@thread
+                }
+                if (header.sampleRate != SAMPLE_RATE ||
+                    header.channels != 1 ||
+                    header.bitsPerSample != 16
+                ) {
+                    Handler(Looper.getMainLooper()).post {
+                        onError(
+                            "仅支持 16kHz/单声道/16bit WAV，" +
+                                    "当前 ${header.sampleRate}Hz/${header.channels}ch/${header.bitsPerSample}bit"
+                        )
+                    }
+                    return@thread
+                }
 
-                // 转为 ShortArray
-                val shortBuf = ShortArray(pcmBytes.size / 2)
-                ByteBuffer.wrap(pcmBytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shortBuf)
+                FileInputStream(wavFile).use { fis ->
+                    fis.skip(header.dataOffset)
+                    val pcmBytes = fis.readBytes()
 
-                // 推理
-                val text = runInference(session, shortBuf)
-                Handler(Looper.getMainLooper()).post {
-                    onResult(text.ifBlank { "(未识别到语音)" })
+                    // 转为 ShortArray
+                    val shortBuf = ShortArray(pcmBytes.size / 2)
+                    ByteBuffer.wrap(pcmBytes).order(ByteOrder.LITTLE_ENDIAN)
+                        .asShortBuffer().get(shortBuf)
+
+                    // 推理
+                    val text = runInference(session, shortBuf)
+                    Handler(Looper.getMainLooper()).post {
+                        onResult(text.ifBlank { "(未识别到语音)" })
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "transcribe error", e)
@@ -286,6 +333,10 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
 
     /**
      * ONNX 推理核心
+     *
+     * 注意：logits 输出长度（shape[1]）与输入 LFR 帧数 T 不相等（动态值，
+     * 由模型内部 CIF 机制决定，实测 T=100 → 20，T=200 → 9）。
+     * 必须按 logits 的实际长度做 argmax，否则越界读 BufferUnderflowException。
      */
     private fun runInference(session: OrtSession, pcm: ShortArray): String {
         val env = ortEnv ?: return "(引擎未初始化)"
@@ -322,26 +373,25 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
         speechTensor.close()
         lenTensor.close()
 
-        // 5. 解析输出 logits 和 token_num
+        // 5. 解析输出 logits
         val logitsTensor = results.get("logits") as? OnnxTensor
-            ?: return "(输出 'logits' 未找到)"
-        val tokenNumTensor = results.get("token_num") as? OnnxTensor
-            ?: return "(输出 'token_num' 未找到)"
+        if (logitsTensor == null) {
+            results.close()
+            return "(输出 'logits' 未找到)"
+        }
 
         val logitsShape = logitsTensor.info.shape
-        val vocabSize = logitsShape[2].toInt()
+        val logitsLen = logitsShape[1].toInt()   // 实际 logits 长度（动态）
+        val vocabSize = logitsShape[2].toInt()   // 8404
         val logitsData = logitsTensor.floatBuffer
 
-        // 有效 token 数
-        val tokenNum = tokenNumTensor.intBuffer
-        val validLen = if (tokenNum.remaining() > 0) tokenNum.get(0) else 0
-
-        // 在每个位置取 argmax
-        val tokenIds = IntArray(t) { pos ->
+        // 6. 在每个位置取 argmax（遍历 logits 实际长度，而非输入帧数）
+        val tokenIds = IntArray(logitsLen) { pos ->
             var maxVal = -1e10f
             var maxIdx = 0
+            val base = pos * vocabSize
             for (v in 0 until vocabSize) {
-                val val_ = logitsData.get(pos * vocabSize + v)
+                val val_ = logitsData.get(base + v)
                 if (val_ > maxVal) {
                     maxVal = val_
                     maxIdx = v
@@ -350,8 +400,8 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
             maxIdx
         }
 
-        // 解码
-        val text = decodeTokens(tokenIds, validLen)
+        // 7. 解码
+        val text = decodeTokens(tokenIds)
         results.close()
         return text
     }
@@ -360,27 +410,39 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
 
     /**
      * 将 token ID 序列解码为文本
-     * Paraformer 特殊 token: <blank>=0, <sos>=1, </sos>=2
+     *
+     * 与 sherpa-onnx OfflineParaformerGreedySearchDecoder 一致：
+     *   - 遍历 logits 全部位置，argmax == </s>(2) 时终止
+     *   - <blank>(0) / <s>(1) / <unk> 等特殊 token 跳过
+     *   - 不做 CTC 式连续去重！Paraformer 输出重复 token 是合法的（如"谢谢"）
+     *   - BPE 前缀（以 @@ 结尾）与后续 token 拼接
      */
-    private fun decodeTokens(tokenIds: IntArray, validLen: Int): String {
+    private fun decodeTokens(tokenIds: IntArray): String {
         if (tokens.isEmpty()) {
             return tokenIds.joinToString(" ") { it.toString() }
         }
 
         val sb = StringBuilder()
-        var prevId = -1
-        // 只取前 validLen 个 token
-        val limit = maxOf(0, minOf(validLen, tokenIds.size))
-        for (i in 0 until limit) {
-            val id = tokenIds[i]
-            // 跳过 <blank>(0), <sos>(1), </sos>(2) 和连续重复
-            if (id <= 2 || id == prevId) continue
-            if (id >= tokens.size) continue
+        for (id in tokenIds) {
+            if (id < 0 || id >= tokens.size) continue
+            if (id == 2) break                        // </s> 终止
+            if (id <= 1) continue                     // <blank> / <s>
             val token = tokens[id]
             // 跳过特殊标记（如 <unk>）
             if (token.startsWith("<") && token.endsWith(">")) continue
+
+            if (token.endsWith("@@")) {
+                // BPE 前缀：去掉 @@ 后与后续 token 直接拼接
+                sb.append(token.dropLast(2))
+                continue
+            }
+
+            // 中英混排：ASCII token 前补一个空格
+            if (token.all { it.code < 128 } && sb.isNotEmpty()) {
+                val last = sb.last()
+                if (last.code >= 128) sb.append(' ')
+            }
             sb.append(token)
-            prevId = id
         }
         return sb.toString().trim()
     }
@@ -407,8 +469,14 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
         onErrorCb = onError
         onLevelCb = onLevel
         isListening = true
+        synchronized(windowLock) {
+            window = mutableListOf()
+            newSamples = 0
+            captureDone = false
+        }
 
-        listenThread = thread(name = "paraformer-listen") {
+        // ===== 采集线程：AudioRecord → 2s 滑动窗口 =====
+        listenThread = thread(name = "paraformer-capture") {
             val minBuf = android.media.AudioRecord.getMinBufferSize(
                 SAMPLE_RATE,
                 android.media.AudioFormat.CHANNEL_IN_MONO,
@@ -419,7 +487,7 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
                 SAMPLE_RATE,
                 android.media.AudioFormat.CHANNEL_IN_MONO,
                 android.media.AudioFormat.ENCODING_PCM_16BIT,
-                maxOf(minBuf, CHUNK_SAMPLES * 2)
+                maxOf(minBuf, READ_CHUNK_SAMPLES * 2 * 2)
             )
             audioRecord = record
 
@@ -427,14 +495,14 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
                 Handler(Looper.getMainLooper()).post {
                     onErrorCb?.invoke("AudioRecord 初始化失败")
                 }
+                synchronized(windowLock) { captureDone = true; windowLock.notifyAll() }
                 return@thread
             }
 
             record.startRecording()
             Log.i(TAG, "real-time listening started")
 
-            val accumulated = mutableListOf<Short>()
-            val buf = ShortArray(CHUNK_SAMPLES)
+            val buf = ShortArray(READ_CHUNK_SAMPLES)
             var lastLevelReport = 0L
 
             while (isListening) {
@@ -456,19 +524,23 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
                         }
                     }
 
-                    accumulated.addAll(buf.take(n))
-                    // 累积至少 0.5s 音频后再识别
-                    if (accumulated.size >= SAMPLE_RATE / 2) {
-                        val pcm = accumulated.toShortArray()
-                        accumulated.clear()
-                        processChunk(pcm)
+                    // 追加到滑动窗口，只保留最近 2s
+                    synchronized(windowLock) {
+                        window.addAll(buf.take(n))
+                        newSamples += n
+                        val excess = window.size - WINDOW_SAMPLES
+                        if (excess > 0) {
+                            window = window.drop(excess).toMutableList()
+                        }
+                        windowLock.notifyAll()
                     }
                 }
             }
 
-            // 处理剩余音频
-            if (accumulated.isNotEmpty()) {
-                processChunk(accumulated.toShortArray())
+            // 采集结束：通知推理线程做最终识别
+            synchronized(windowLock) {
+                captureDone = true
+                windowLock.notifyAll()
             }
 
             try { record.stop() } catch (_: Exception) {}
@@ -476,24 +548,53 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
             audioRecord = null
             Log.i(TAG, "real-time listening stopped")
         }
-    }
 
-    private fun processChunk(pcm: ShortArray) {
-        try {
-            val session = ortSession ?: return
-            val text = runInference(session, pcm)
-            if (text.isNotBlank()) {
-                Handler(Looper.getMainLooper()).post {
-                    onPartialCb?.invoke(text)
+        // ===== 推理线程：每 0.5s 新音频 → 推理最近 2s 窗口 =====
+        inferThread = thread(name = "paraformer-infer") {
+            var lastEmitted = ""
+            var isFinal = false
+            while (!isFinal) {
+                val pcm: ShortArray?
+                synchronized(windowLock) {
+                    // 等待：有新音频可推理，或采集已结束
+                    while (!captureDone && newSamples < INFER_STEP_SAMPLES) {
+                        windowLock.wait(200)
+                    }
+                    pcm = if (window.size >= MIN_INFER_SAMPLES) {
+                        window.toShortArray()
+                    } else null
+                    newSamples = 0
+                    isFinal = captureDone
+                }
+
+                if (pcm == null) {
+                    if (isFinal) break
+                    continue
+                }
+
+                val text = try {
+                    val session = ortSession
+                    if (session != null) runInference(session, pcm) else ""
+                } catch (e: Exception) {
+                    Log.e(TAG, "inference error", e)
+                    ""
+                }
+
+                if (text.isNotBlank() && text != lastEmitted) {
+                    lastEmitted = text
+                    val finalText = text
+                    Handler(Looper.getMainLooper()).post {
+                        if (isFinal) onFinalCb?.invoke(finalText)
+                        else onPartialCb?.invoke(finalText)
+                    }
                 }
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "chunk inference error", e)
         }
     }
 
     override fun stopListening() {
         isListening = false
+        // 等采集线程退出
         listenThread?.join(2000)
         listenThread = null
         audioRecord?.let {
@@ -501,6 +602,12 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
             it.release()
         }
         audioRecord = null
+        // 唤醒推理线程完成最终识别
+        synchronized(windowLock) {
+            windowLock.notifyAll()
+        }
+        inferThread?.join(3000)
+        inferThread = null
     }
 
     // ======================== 资源释放 ========================
