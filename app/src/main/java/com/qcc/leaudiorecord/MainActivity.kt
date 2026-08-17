@@ -13,6 +13,7 @@ import android.widget.ProgressBar
 import android.widget.Spinner
 import android.widget.TextView
 import java.io.File
+import java.io.FileOutputStream
 
 /**
  * LE Audio 录音测试工具
@@ -55,6 +56,35 @@ class MainActivity : Activity() {
         const val TAG = "LeAudioRecord"
         /** 录音文件最多保留数量（超出部分自动清理最旧文件） */
         const val MAX_RECORDINGS = 10
+
+        /** assets 中的默认音频文件路径 */
+        const val ASSET_DEFAULT_AUDIO = "sounds/Lullaby.wav"
+        /** 默认音频复制到外部存储后的文件名 */
+        const val DEFAULT_AUDIO_NAME = "default_lullaby.wav"
+    }
+
+    /**
+     * 确保默认音频文件存在：首次启动时从 assets 复制到外部存储目录。
+     * 复用统一文件列表与回放逻辑（AudioTrack 支持 44.1kHz 立体声 WAV）。
+     *
+     * @return 默认音频文件（不存在返回 null）
+     */
+    private fun ensureDefaultAudio(): File? {
+        val dir = getExternalFilesDir(null) ?: return null
+        val target = File(dir, DEFAULT_AUDIO_NAME)
+        if (target.exists() && target.length() > 0) return target
+        try {
+            assets.open(ASSET_DEFAULT_AUDIO).use { input ->
+                FileOutputStream(target).use { output ->
+                    input.copyTo(output)
+                }
+            }
+            android.util.Log.i(TAG, "default audio extracted: ${target.absolutePath}")
+            return target
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "extract default audio failed", e)
+            return null
+        }
     }
 
     /** 读取增益 Spinner 选中值 → 倍数 */
@@ -118,6 +148,11 @@ class MainActivity : Activity() {
         if (deleted > 0) {
             setStatus("已清理 $deleted 个旧录音（最多保留 ${MAX_RECORDINGS} 个）")
         }
+        // 首次启动时从 assets 复制默认音频到外部存储（供未录音时回放）
+        val defaultAudio = ensureDefaultAudio()
+        if (defaultAudio == null) {
+            android.util.Log.w(TAG, "default audio unavailable")
+        }
 
         // 请求录音权限
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
@@ -157,6 +192,14 @@ class MainActivity : Activity() {
         val allInputs = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
         val allOutputs = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
         android.util.Log.i(TAG, "inputs=${allInputs.size} outputs=${allOutputs.size}")
+
+        // 详细日志：逐设备类型/地址/产品名，便于排查车机环境
+        for (d in allInputs.sortedBy { it.type }) {
+            android.util.Log.i(TAG, "  IN: ${AudioRecordPlayer.deviceLabel(d)}")
+        }
+        for (d in allOutputs.sortedBy { it.type }) {
+            android.util.Log.i(TAG, "  OUT: ${AudioRecordPlayer.deviceLabel(d)} id=${d.id}")
+        }
 
         for (d in allInputs.sortedBy { it.type }) {
             if (d.isSource) inputDevices.add(d)
@@ -327,20 +370,35 @@ class MainActivity : Activity() {
             f.isFile && f.name.endsWith(".wav")
         } ?: emptyArray()
         val sorted = wavFiles.sortedByDescending { it.lastModified() }
-        if (sorted.isEmpty()) {
+
+        // 默认音频（assets 复制而来，未录音时也可回放）置于列表首位
+        val defaultAudio = File(dir, DEFAULT_AUDIO_NAME)
+        val playList = mutableListOf<File>()
+        val defaultAvailable = defaultAudio.exists() && defaultAudio.length() > 0
+        if (defaultAvailable) {
+            playList.add(defaultAudio)
+        }
+        // 过滤掉与默认文件重复的项
+        playList.addAll(sorted.filter { it.absolutePath != defaultAudio.absolutePath })
+
+        if (playList.isEmpty()) {
             setStatus("无 WAV 文件，请先录音")
             return
         }
 
-        // 弹出文件选择：目录下全部 WAV（便于回放测试信号做对照）
-        val names = sorted.map { f ->
+        // 弹出文件选择：默认音频 + 目录下全部录音（便于回放测试信号做对照）
+        val names = playList.map { f ->
             val sizeKb = f.length() / 1024
-            "${f.name} (${sizeKb}KB)"
+            if (f.absolutePath == defaultAudio.absolutePath) {
+                "🎵 默认音频 Lullaby (${sizeKb}KB)"
+            } else {
+                "${f.name} (${sizeKb}KB)"
+            }
         }
         AlertDialog.Builder(this)
             .setTitle("选择回放文件")
             .setItems(names.toTypedArray()) { dialog, which ->
-                startPlayback(sorted[which])
+                startPlayback(playList[which])
                 dialog.dismiss()
             }
             .setNegativeButton("取消", null)
