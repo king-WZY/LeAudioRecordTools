@@ -1,5 +1,6 @@
 package com.qcc.leaudiorecord
 
+import android.media.AudioDeviceInfo
 import java.io.File
 
 /**
@@ -32,12 +33,19 @@ interface AsrEngine {
 
     /**
      * 启动实时流式识别
+     *
+     * 引擎自建 AudioRecord 采集（与录音路径独立），通过 [inputDevice] 绑定到
+     * 用户在 UI 上选择的输入设备（经 `setPreferredDevice`），确保路由与"开始录音"
+     * 一致；不指定时走系统默认路由。
+     *
+     * @param inputDevice 指定的录音输入设备（null = 系统默认）
      * @param onPartial 中间结果（主线程）
      * @param onFinal   最终结果（主线程）
      * @param onError   错误（主线程）
      * @param onLevel   实时电平回调（主线程，可选），参数 peak/rms/dbfs
      */
     fun startListening(
+        inputDevice: AudioDeviceInfo?,
         onPartial: (String) -> Unit,
         onFinal: (String) -> Unit,
         onError: (String) -> Unit,

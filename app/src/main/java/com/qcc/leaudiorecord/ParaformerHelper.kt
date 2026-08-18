@@ -50,30 +50,26 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
         /** 采样率 */
         const val SAMPLE_RATE = 16000
 
-        /** 实时识别滑动窗口时长 (ms) */
-        private const val WINDOW_MS = 2000
-        private const val WINDOW_SAMPLES = SAMPLE_RATE * WINDOW_MS / 1000   // 32000
-
-        /** 实时识别推理步进：每积累这么多新样本推理一次 */
-        private const val INFER_STEP_MS = 500
-        private const val INFER_STEP_SAMPLES = SAMPLE_RATE * INFER_STEP_MS / 1000  // 8000
-
         /** 最小推理音频长度（低于此长度不做推理） */
-        private const val MIN_INFER_SAMPLES = SAMPLE_RATE * 500 / 1000
+        private const val MIN_INFER_SAMPLES = SAMPLE_RATE * 500 / 1000  // 8000 @ 16kHz
 
         /** 采集 read 缓冲（100ms） */
         private const val READ_CHUNK_SAMPLES = SAMPLE_RATE * 100 / 1000  // 1600
 
         /**
          * 语音/静音判定参数（自适应 SNR 检测）。
-         * 窗口内按 100ms 分块算 dBFS：
+         * 按 100ms 分块算 dBFS：
          *   - baseline = 最低块（底噪）
          *   - 若最高块与底噪的差 >= MIN_SPEECH_SNR dB 且最高块 > MIN_ABS_DBFS，判定为有语音
-         * 采用相对差值而非固定阈值，可适配弱 MIC（如开发板内置 MIC 语音仅 -70dB 左右）
-         * 而环境静音时块间差异极小，不会误判。
          */
         private const val MIN_SPEECH_SNR = 10f
         private const val MIN_ABS_DBFS = -90f
+
+        /**
+         * 语音结束判定：连续静音块数达到此阈值，认为语音段结束。
+         * 每块 100ms，10 块 = 1s 静音。无论环境噪声多低，说话间隙不会超过 1s 持续静音。
+         */
+        private const val SILENCE_END_BLOCKS = 10
     }
 
     private var ortEnv: OrtEnvironment? = null
@@ -83,9 +79,8 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
     private var cmvnInvStd: FloatArray? = null
     private var fbank: FbankExtractor? = null
 
-    // 实时识别相关
+    // 实时识别相关（VAD 整句模式）
     private var listenThread: Thread? = null
-    private var inferThread: Thread? = null
     @Volatile private var isListening = false
     private var audioRecord: android.media.AudioRecord? = null
     private var onPartialCb: ((String) -> Unit)? = null
@@ -93,12 +88,7 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
     private var onErrorCb: ((String) -> Unit)? = null
     private var onLevelCb: ((Int, Int, Float) -> Unit)? = null
 
-    // 滑动窗口共享状态（采集线程写，推理线程读）
-    private val windowLock = Object()
-    private var window = mutableListOf<Short>()
-    private var newSamples = 0
-    private var captureDone = false
-
+    // VAD 整句状态
     override val isReady: Boolean get() = ortSession != null
 
     // ======================== 模型部署 ========================
@@ -351,21 +341,31 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
     }
 
     /**
-     * 检测 PCM 音频是否包含有效语音（自适应静音检测）。
-     *
-     * 按 100ms 分块计算 RMS(dBFS)：
-     *   - 最低块视为底噪基线（环境静音时各块差异很小）
-     *   - 最高块若比底噪高 >= [MIN_SPEECH_SNR] dB 且绝对值 > [MIN_ABS_DBFS]，判定为有语音
-     *
-     * 用相对差值而非固定阈值，能适配拾音很弱的设备（如开发板内置 MIC），
-     * 同时纯静音（各块电平接近）不会误判为语音，从而避免静音识别出乱码。
-     *
-     * @param pcm 16kHz mono PCM（int16 尺度）
-     * @return true = 含语音，false = 完全静音
+     * 检测整个 PCM 文件是否包含有效语音（静音检测）。
+     * 按 100ms 分块，用自适应 SNR 检测任一块是否为语音。
      */
     private fun hasVoice(pcm: ShortArray): Boolean {
-        val blockSize = SAMPLE_RATE / 10   // 100ms = 1600 samples
-        val dbfs = ArrayList<Float>(pcm.size / blockSize + 1)
+        if (pcm.size < SAMPLE_RATE / 10) return false
+        // 用前 5 块（0.5s）做底噪基线
+        val blockSize = SAMPLE_RATE / 10   // 1600
+        val baselineBlocks = 5
+        val baselines = mutableListOf<Float>()
+        for (i in 0 until minOf(baselineBlocks, pcm.size / blockSize)) {
+            var sumSq = 0L
+            val start = i * blockSize
+            val end = minOf(start + blockSize, pcm.size)
+            for (j in start until end) {
+                val v = pcm[j].toInt()
+                sumSq += v.toLong() * v
+            }
+            val n = end - start
+            if (n <= 0) continue
+            val rms = sqrt(sumSq.toDouble() / n)
+            baselines.add(if (rms > 0) (20.0 * log10(rms / 32768.0)).toFloat() else -120f)
+        }
+        val baseline = baselines.minOrNull() ?: -120f
+
+        // 检测所有块
         for (start in pcm.indices step blockSize) {
             val end = minOf(start + blockSize, pcm.size)
             var sumSq = 0L
@@ -376,15 +376,10 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
             val n = end - start
             if (n <= 0) continue
             val rms = sqrt(sumSq.toDouble() / n)
-            val db = if (rms > 0) (20.0 * log10(rms / 32768.0)).toFloat() else -120f
-            dbfs.add(db)
+            val dbfs = if (rms > 0) (20.0 * log10(rms / 32768.0)).toFloat() else -120f
+            if (dbfs > MIN_ABS_DBFS && (dbfs - baseline) >= MIN_SPEECH_SNR) return true
         }
-        if (dbfs.isEmpty()) return false
-
-        val baseline = dbfs.minOrNull() ?: -120f
-        val peak = dbfs.maxOrNull() ?: -120f
-        // 有语音：峰值块绝对值不太低，且明显高于底噪（信噪比足够）
-        return peak > MIN_ABS_DBFS && (peak - baseline) >= MIN_SPEECH_SNR
+        return false
     }
 
     /**
@@ -510,6 +505,7 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
     // ======================== 实时流式识别 ========================
 
     override fun startListening(
+        inputDevice: android.media.AudioDeviceInfo?,
         onPartial: (String) -> Unit,
         onFinal: (String) -> Unit,
         onError: (String) -> Unit,
@@ -529,14 +525,12 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
         onErrorCb = onError
         onLevelCb = onLevel
         isListening = true
-        synchronized(windowLock) {
-            window = mutableListOf()
-            newSamples = 0
-            captureDone = false
-        }
 
-        // ===== 采集线程：AudioRecord → 2s 滑动窗口 =====
-        listenThread = thread(name = "paraformer-capture") {
+        // ===== 单线程采集 + VAD 整句推理 =====
+        // Paraformer 是离线非自回归模型，必须喂完整句子才能正确识别。
+        // 不能像 CTC 那样做流式——每 0.5s 滑窗碎片会让模型输出乱码。
+        // 方案：VAD 检测语音段起始/结束，累积完整句子后一次性推理。
+        listenThread = thread(name = "paraformer-realtime") {
             val minBuf = android.media.AudioRecord.getMinBufferSize(
                 SAMPLE_RATE,
                 android.media.AudioFormat.CHANNEL_IN_MONO,
@@ -555,52 +549,114 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
                 Handler(Looper.getMainLooper()).post {
                     onErrorCb?.invoke("AudioRecord 初始化失败")
                 }
-                synchronized(windowLock) { captureDone = true; windowLock.notifyAll() }
                 return@thread
             }
 
-            record.startRecording()
-            Log.i(TAG, "real-time listening started")
+            // 绑定到 UI 选中的输入设备，确保路由与"开始录音"一致
+            if (inputDevice != null) {
+                record.preferredDevice = inputDevice
+                val applied = record.preferredDevice == inputDevice
+                Log.i(TAG, "set input device: ${AudioRecordPlayer.deviceLabel(inputDevice)} applied=$applied")
+            } else {
+                Log.i(TAG, "input device: 系统默认")
+            }
 
-            val buf = ShortArray(READ_CHUNK_SAMPLES)
+            record.startRecording()
+            Log.i(TAG, "real-time listening started (VAD whole-utterance)")
+
+            val buf = ShortArray(READ_CHUNK_SAMPLES)   // 100ms 一块
+            val utterance = mutableListOf<Short>()      // 当前语音段累积
+            var silenceBlocks = 0                       // 连续静音块计数
             var lastLevelReport = 0L
+            var lastEmitted = ""
 
             while (isListening) {
                 val n = record.read(buf, 0, buf.size)
-                if (n > 0) {
-                    // 应用 ASR 增益
-                    val gain = AudioRecordPlayer.asrGain
-                    if (gain != 1.0f) {
-                        AudioGainUtil.applyGain(buf, gain)
-                    }
+                if (n <= 0) continue
 
-                    // 报告电平（每 ~200ms）
-                    val now = System.currentTimeMillis()
-                    if (onLevelCb != null && now - lastLevelReport >= 200) {
-                        lastLevelReport = now
-                        val level = AudioGainUtil.analyzeLevel(buf, gain)
-                        Handler(Looper.getMainLooper()).post {
-                            onLevelCb?.invoke(level.peak, level.rms, level.dbfs)
-                        }
-                    }
+                // 应用 ASR 增益
+                val gain = AudioRecordPlayer.asrGain
+                if (gain != 1.0f) {
+                    AudioGainUtil.applyGain(buf, gain)
+                }
 
-                    // 追加到滑动窗口，只保留最近 2s
-                    synchronized(windowLock) {
-                        window.addAll(buf.take(n))
-                        newSamples += n
-                        val excess = window.size - WINDOW_SAMPLES
-                        if (excess > 0) {
-                            window = window.drop(excess).toMutableList()
-                        }
-                        windowLock.notifyAll()
+                // 报告电平（每 ~200ms）
+                val now = System.currentTimeMillis()
+                if (onLevelCb != null && now - lastLevelReport >= 200) {
+                    lastLevelReport = now
+                    val level = AudioGainUtil.analyzeLevel(buf, gain)
+                    Handler(Looper.getMainLooper()).post {
+                        onLevelCb?.invoke(level.peak, level.rms, level.dbfs)
                     }
+                }
+
+                // 计算当前块 RMS dBFS
+                var sumSq = 0L
+                for (i in 0 until n) {
+                    val v = buf[i].toInt()
+                    sumSq += v.toLong() * v
+                }
+                val rms = sqrt(sumSq.toDouble() / n)
+                val dbfs = if (rms > 0) (20.0 * log10(rms / 32768.0)).toFloat() else -120f
+
+                // VAD：固定阈值 -80dBFS
+                // 在此设备上，底噪 RMS -85~-95dBFS，语音块 -50~-77dBFS，-80dBFS 可完美区分
+                val isVoice = dbfs > -80f
+
+                if (isVoice) {
+                    // 语音：追加到当前段
+                    utterance.addAll(buf.take(n))
+                    silenceBlocks = 0
+                } else if (utterance.isNotEmpty()) {
+                    // 静音且正在累积语音段：计数，也追加静音（用于填充句间间隙）
+                    silenceBlocks++
+                    utterance.addAll(buf.take(n))
+
+                    if (silenceBlocks >= SILENCE_END_BLOCKS) {
+                        // 语音段结束：去掉末尾静音后推理
+                        val endSilence = SILENCE_END_BLOCKS * n
+                        val uttLen = utterance.size - endSilence
+                        if (uttLen >= MIN_INFER_SAMPLES) {
+                            val pcm = utterance.take(uttLen).toShortArray()
+                            Log.i(TAG, "VAD: utterance complete, ${uttLen} samples (${uttLen / SAMPLE_RATE}s)")
+                            val text = try {
+                                val session = ortSession
+                                if (session != null) runInference(session, pcm) else ""
+                            } catch (e: Exception) {
+                                Log.e(TAG, "inference error", e); ""
+                            }
+                            Log.i(TAG, "inference result: \"$text\" (len=${text.length})")
+                            if (text.isNotBlank() && text != lastEmitted) {
+                                lastEmitted = text
+                                Handler(Looper.getMainLooper()).post {
+                                    onFinalCb?.invoke(text)
+                                }
+                            }
+                        }
+                        utterance.clear()
+                        silenceBlocks = 0
+                    }
+                } else {
+                    // 无语音段进行中：静音，不做任何事
                 }
             }
 
-            // 采集结束：通知推理线程做最终识别
-            synchronized(windowLock) {
-                captureDone = true
-                windowLock.notifyAll()
+            // 采集结束：处理剩余语音段
+            if (utterance.size >= MIN_INFER_SAMPLES) {
+                val pcm = utterance.toShortArray()
+                Log.i(TAG, "VAD: final utterance, ${pcm.size} samples (${pcm.size / SAMPLE_RATE}s)")
+                val text = try {
+                    val session = ortSession
+                    if (session != null) runInference(session, pcm) else ""
+                } catch (e: Exception) {
+                    Log.e(TAG, "inference error", e); ""
+                }
+                Log.i(TAG, "inference result: \"$text\" (len=${text.length})")
+                if (text.isNotBlank()) {
+                    Handler(Looper.getMainLooper()).post {
+                        onFinalCb?.invoke(text)
+                    }
+                }
             }
 
             try { record.stop() } catch (_: Exception) {}
@@ -608,79 +664,10 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
             audioRecord = null
             Log.i(TAG, "real-time listening stopped")
         }
-
-        // ===== 推理线程：每 0.5s 新音频 → 推理最近 2s 窗口 =====
-        inferThread = thread(name = "paraformer-infer") {
-            var lastEmitted = ""
-            var lastVoiceState: Boolean? = null
-            var isFinal = false
-            while (!isFinal) {
-                val pcm: ShortArray?
-                synchronized(windowLock) {
-                    // 等待：有新音频可推理，或采集已结束
-                    while (!captureDone && newSamples < INFER_STEP_SAMPLES) {
-                        windowLock.wait(200)
-                    }
-                    pcm = if (window.size >= MIN_INFER_SAMPLES) {
-                        window.toShortArray()
-                    } else null
-                    newSamples = 0
-                    isFinal = captureDone
-                }
-
-                if (pcm == null) {
-                    if (isFinal) break
-                    continue
-                }
-
-                // 静音检测：整个窗口无语音则不推理（避免静音识别出乱码文字）
-                val voice = hasVoice(pcm)
-                if (lastVoiceState != voice) {
-                    lastVoiceState = voice
-                    Log.i(TAG, "voice state: ${if (voice) "语音" else "静音"} (pcm=${pcm.size})")
-                }
-                if (!voice) {
-                    // 语音已结束：把最后一句作为最终结果输出（仅一次），然后重置等待下一句
-                    if (lastEmitted.isNotEmpty()) {
-                        val finalText = lastEmitted
-                        lastEmitted = ""
-                        Handler(Looper.getMainLooper()).post {
-                            onFinalCb?.invoke(finalText)
-                        }
-                    }
-                    continue
-                }
-
-                val text = try {
-                    val session = ortSession
-                    if (session != null) runInference(session, pcm) else ""
-                } catch (e: Exception) {
-                    Log.e(TAG, "inference error", e)
-                    ""
-                }
-                Log.i(TAG, "inference result: \"$text\" (len=${text.length})")
-
-                if (text.isNotBlank() && text != lastEmitted) {
-                    lastEmitted = text
-                    val finalText = text
-                    Handler(Looper.getMainLooper()).post {
-                        if (isFinal) onFinalCb?.invoke(finalText)
-                        else onPartialCb?.invoke(finalText)
-                    }
-                } else if (isFinal && lastEmitted.isNotEmpty()) {
-                    // 停止时窗口文本与上次一致，仍输出最终结果（循环即将退出，只会执行一次）
-                    val finalText = lastEmitted
-                    Handler(Looper.getMainLooper()).post {
-                        onFinalCb?.invoke(finalText)
-                    }
-                }
-            }
-        }
     }
 
     override fun stopListening() {
         isListening = false
-        // 等采集线程退出
         listenThread?.join(2000)
         listenThread = null
         audioRecord?.let {
@@ -688,12 +675,6 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
             it.release()
         }
         audioRecord = null
-        // 唤醒推理线程完成最终识别
-        synchronized(windowLock) {
-            windowLock.notifyAll()
-        }
-        inferThread?.join(3000)
-        inferThread = null
     }
 
     // ======================== 资源释放 ========================

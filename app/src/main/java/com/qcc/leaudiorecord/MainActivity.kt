@@ -322,6 +322,7 @@ class MainActivity : Activity() {
         btnAsrTranscribe.isEnabled = false
 
         currentEngine.startListening(
+            inputDevice = inputDevices.getOrNull(selectedInputIdx),
             onPartial = { partial ->
                 txtAsrResult.text = partial
             },

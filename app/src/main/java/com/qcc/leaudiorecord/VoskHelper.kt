@@ -151,6 +151,7 @@ class VoskHelper(private val appContext: Context) : AsrEngine {
     // ======================== 实时流式识别 ========================
 
     override fun startListening(
+        inputDevice: android.media.AudioDeviceInfo?,
         onPartial: (String) -> Unit,
         onFinal: (String) -> Unit,
         onError: (String) -> Unit,
@@ -163,6 +164,11 @@ class VoskHelper(private val appContext: Context) : AsrEngine {
         if (speechService != null) {
             onError("已在识别中")
             return
+        }
+        if (inputDevice != null) {
+            // Vosk SpeechService 内部自建 AudioRecord，无法 setPreferredDevice。
+            // 此处记录但仍走 Vosk 自采路径（如需指定设备路由请用 Paraformer）。
+            Log.w(TAG, "inputDevice=${inputDevice.id} ignored by Vosk (uses internal AudioSource.MIC)")
         }
         try {
             val rec = Recognizer(m, 16000.0f)
