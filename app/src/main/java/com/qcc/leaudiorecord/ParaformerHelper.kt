@@ -63,6 +63,17 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
 
         /** 采集 read 缓冲（100ms） */
         private const val READ_CHUNK_SAMPLES = SAMPLE_RATE * 100 / 1000  // 1600
+
+        /**
+         * 语音/静音判定参数（自适应 SNR 检测）。
+         * 窗口内按 100ms 分块算 dBFS：
+         *   - baseline = 最低块（底噪）
+         *   - 若最高块与底噪的差 >= MIN_SPEECH_SNR dB 且最高块 > MIN_ABS_DBFS，判定为有语音
+         * 采用相对差值而非固定阈值，可适配弱 MIC（如开发板内置 MIC 语音仅 -70dB 左右）
+         * 而环境静音时块间差异极小，不会误判。
+         */
+        private const val MIN_SPEECH_SNR = 10f
+        private const val MIN_ABS_DBFS = -90f
     }
 
     private var ortEnv: OrtEnvironment? = null
@@ -318,6 +329,14 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
                     ByteBuffer.wrap(pcmBytes).order(ByteOrder.LITTLE_ENDIAN)
                         .asShortBuffer().get(shortBuf)
 
+                    // 静音检测：录音无有效语音时直接提示，不做推理（避免输出乱码）
+                    if (!hasVoice(shortBuf)) {
+                        Handler(Looper.getMainLooper()).post {
+                            onResult("(未检测到语音)")
+                        }
+                        return@thread
+                    }
+
                     // 推理
                     val text = runInference(session, shortBuf)
                     Handler(Looper.getMainLooper()).post {
@@ -329,6 +348,43 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
                 Handler(Looper.getMainLooper()).post { onError("转录失败: ${e.message}") }
             }
         }
+    }
+
+    /**
+     * 检测 PCM 音频是否包含有效语音（自适应静音检测）。
+     *
+     * 按 100ms 分块计算 RMS(dBFS)：
+     *   - 最低块视为底噪基线（环境静音时各块差异很小）
+     *   - 最高块若比底噪高 >= [MIN_SPEECH_SNR] dB 且绝对值 > [MIN_ABS_DBFS]，判定为有语音
+     *
+     * 用相对差值而非固定阈值，能适配拾音很弱的设备（如开发板内置 MIC），
+     * 同时纯静音（各块电平接近）不会误判为语音，从而避免静音识别出乱码。
+     *
+     * @param pcm 16kHz mono PCM（int16 尺度）
+     * @return true = 含语音，false = 完全静音
+     */
+    private fun hasVoice(pcm: ShortArray): Boolean {
+        val blockSize = SAMPLE_RATE / 10   // 100ms = 1600 samples
+        val dbfs = ArrayList<Float>(pcm.size / blockSize + 1)
+        for (start in pcm.indices step blockSize) {
+            val end = minOf(start + blockSize, pcm.size)
+            var sumSq = 0L
+            for (i in start until end) {
+                val v = pcm[i].toInt()
+                sumSq += v.toLong() * v
+            }
+            val n = end - start
+            if (n <= 0) continue
+            val rms = sqrt(sumSq.toDouble() / n)
+            val db = if (rms > 0) (20.0 * log10(rms / 32768.0)).toFloat() else -120f
+            dbfs.add(db)
+        }
+        if (dbfs.isEmpty()) return false
+
+        val baseline = dbfs.minOrNull() ?: -120f
+        val peak = dbfs.maxOrNull() ?: -120f
+        // 有语音：峰值块绝对值不太低，且明显高于底噪（信噪比足够）
+        return peak > MIN_ABS_DBFS && (peak - baseline) >= MIN_SPEECH_SNR
     }
 
     /**
@@ -556,6 +612,7 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
         // ===== 推理线程：每 0.5s 新音频 → 推理最近 2s 窗口 =====
         inferThread = thread(name = "paraformer-infer") {
             var lastEmitted = ""
+            var lastVoiceState: Boolean? = null
             var isFinal = false
             while (!isFinal) {
                 val pcm: ShortArray?
@@ -576,6 +633,24 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
                     continue
                 }
 
+                // 静音检测：整个窗口无语音则不推理（避免静音识别出乱码文字）
+                val voice = hasVoice(pcm)
+                if (lastVoiceState != voice) {
+                    lastVoiceState = voice
+                    Log.i(TAG, "voice state: ${if (voice) "语音" else "静音"} (pcm=${pcm.size})")
+                }
+                if (!voice) {
+                    // 语音已结束：把最后一句作为最终结果输出（仅一次），然后重置等待下一句
+                    if (lastEmitted.isNotEmpty()) {
+                        val finalText = lastEmitted
+                        lastEmitted = ""
+                        Handler(Looper.getMainLooper()).post {
+                            onFinalCb?.invoke(finalText)
+                        }
+                    }
+                    continue
+                }
+
                 val text = try {
                     val session = ortSession
                     if (session != null) runInference(session, pcm) else ""
@@ -583,6 +658,7 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
                     Log.e(TAG, "inference error", e)
                     ""
                 }
+                Log.i(TAG, "inference result: \"$text\" (len=${text.length})")
 
                 if (text.isNotBlank() && text != lastEmitted) {
                     lastEmitted = text
@@ -590,6 +666,12 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
                     Handler(Looper.getMainLooper()).post {
                         if (isFinal) onFinalCb?.invoke(finalText)
                         else onPartialCb?.invoke(finalText)
+                    }
+                } else if (isFinal && lastEmitted.isNotEmpty()) {
+                    // 停止时窗口文本与上次一致，仍输出最终结果（循环即将退出，只会执行一次）
+                    val finalText = lastEmitted
+                    Handler(Looper.getMainLooper()).post {
+                        onFinalCb?.invoke(finalText)
                     }
                 }
             }
