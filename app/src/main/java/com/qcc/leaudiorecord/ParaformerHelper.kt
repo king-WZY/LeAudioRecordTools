@@ -69,7 +69,7 @@ class ParaformerHelper(private val appContext: Context) : AsrEngine {
          * 语音结束判定：连续静音块数达到此阈值，认为语音段结束。
          * 每块 100ms，10 块 = 1s 静音。无论环境噪声多低，说话间隙不会超过 1s 持续静音。
          */
-        private const val SILENCE_END_BLOCKS = 10
+        private const val SILENCE_END_BLOCKS = 5
     }
 
     private var ortEnv: OrtEnvironment? = null

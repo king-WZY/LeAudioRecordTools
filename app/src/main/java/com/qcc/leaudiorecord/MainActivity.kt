@@ -149,8 +149,8 @@ class MainActivity : Activity() {
         audio = AudioRecordPlayer()
         vosk = VoskHelper(this)
         paraformer = ParaformerHelper(this)
+        engines.add(paraformer)  // 默认引擎为 Paraformer
         engines.add(vosk)
-        engines.add(paraformer)
 
         btnInput = findViewById(R.id.btnInput)
         btnOutput = findViewById(R.id.btnOutput)
